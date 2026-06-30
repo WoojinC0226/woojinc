@@ -542,6 +542,9 @@ function showCard(){
   const i=queue[pos];const d=DECKS[deck][i];const m=DECK_META[deck];
   $('#card').classList.remove('flip');
   $('#rate').classList.add('hidden');
+  // 스크롤 위치 초기화 (이전 카드에서 내렸던 위치 리셋)
+  const bf=document.querySelector('.back-face'); if(bf)bf.scrollTop=0;
+  window.scrollTo(0,0);
   // 앞면
   const subTag='';
   $('#frontTag').className='tag '+m.cls;$('#frontTag').textContent=m.label+subTag;
