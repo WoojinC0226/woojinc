@@ -1,0 +1,2082 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>디자인 발주 도우미</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body{margin:0;font-family:"Nanum Gothic","Noto Sans KR","Noto Sans SC",sans-serif;}
+  #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:#f8fafc;color:#64748b;font-size:14px;flex-direction:column;gap:12px;z-index:9999}
+  .spinner{width:32px;height:32px;border:3px solid #e2e8f0;border-top-color:#d97706;
+    border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div><div>디자인 발주 도우미를 불러오는 중...</div></div>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+
+// API Key (Runtime environment provides this)
+const apiKey = "";
+
+// Unified Sans-Serif Font Stack to ensure complete CJK and Numeric compatibility across all systems
+const PREPRESS_FONT_STACK = '"Nanum Gothic", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", "Segoe UI", sans-serif';
+
+// Global Pantone & Common color mapping dictionary for prepress accuracy
+// Ref: Pantone Spot Color Formula Guide Book & ISO 12647 Print Standards
+const PANTONE_MAP = {
+  '186': '#C8102E', // Pantone Red 186 C
+  '485': '#DA291C', // Bright Red 485 C
+  '032': '#EF3340', // Red 032 C
+  '245': '#D162B4', // Pantone Violet 245 C (Brings vivid purple-pink)
+  '566': '#C2D7CE', // Pantone Sage Green 566 C (Brings muted pastel sage)
+  '1225': '#FFC72C', // Pantone Warm Golden Yellow 1225 C
+  '521': '#D5C5E3', // Pantone Light Lavender 521 C
+  '6668': '#5B6770', // Pantone Slate Blue-Gray 6668 C
+  '3945': '#E1F02C', // Pantone 3945 C (Bright Acid Lime-Yellow)
+  '3536': '#89C7B6', // Pantone 3536 C (Muted Mint-Teal Green)
+  '6163': '#D0DFD4', // Pantone 6163 C (Light Pastel Sage Green)
+  '293': '#003DA5', // Blue 293 C
+  '286': '#0033A0', // Blue 286 C
+  '300': '#005BBB', // Blue 300 C
+  '109': '#FED100', // Yellow 109 C
+  '116': '#FFCD00', // Yellow 116 C
+  '347': '#009A44', // Green 347 C
+  '354': '#00B140', // Green 354 C
+  '871': '#86724C', // Metallic Gold 871 C
+  '872': '#85704D', // Metallic Gold 872 C
+  '877': '#8A9A9B', // Metallic Silver 877 C
+  'reflex blue': '#0A1172',
+  'cool gray 9': '#75787B',
+  'cool gray 11': '#53565A',
+};
+
+// Normalizes color names to ensure flawless matching between user inputs and ASE swatches
+const normalizeColorName = (name) => {
+  if (!name) return "";
+  return name
+    .toLowerCase()
+    .replace(/pantone|pms/gi, "")
+    .replace(/[^a-z0-9]/gi, "");
+};
+
+// Safe Hex converter helper for PDF-lib rgb normalization
+const hexToRgb = (hex) => {
+  const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+  const fullHex = hex.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(fullHex);
+  return result ? {
+    r: parseInt(result[1], 16) / 255,
+    g: parseInt(result[2], 16) / 255,
+    b: parseInt(result[3], 16) / 255
+  } : { r: 0.8, g: 0.8, b: 0.8 };
+};
+
+// Beautiful procedural HSL to Hex generator for unmapped Pantone numbers
+const hslToHex = (h, s, l) => {
+  l /= 100;
+  const a = (s * Math.min(l, 1 - l)) / 100;
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+};
+
+// Procedural Spot Color Heuristic Generator based on Pantone numerical index 
+const getHeuristicColor = (num) => {
+  // Normalize 4-digit codes to 3-digit ranges for consistent mapping
+  let base = num;
+  if (num >= 1000 && num <= 9999) {
+    if (num >= 1000 && num <= 1999) {
+      base = Math.floor(num / 10);
+    } else if (num >= 2000 && num <= 2999) {
+      base = Math.floor(num / 10);
+    } else if (num >= 3000 && num <= 3999) {
+      base = Math.floor(num / 10);
+    } else if (num >= 5000 && num <= 5999) {
+      base = Math.floor(num / 10);
+    } else if (num >= 6000 && num <= 6999) {
+      base = Math.floor(num / 10);
+    } else {
+      base = num % 1000;
+    }
+  }
+
+  if (base >= 100 && base <= 139) return hslToHex(48 + (base % 12), 95, 55); // Yellows
+  if (base >= 140 && base <= 195) return hslToHex(12 + (base % 20), 95, 50); // Oranges
+  if (base >= 196 && base <= 249) return hslToHex(335 + (base % 20), 90, 52); // Pinks
+  if (base >= 250 && base <= 299) return hslToHex(265 + (base % 20), 85, 45); // Purples
+  if (base >= 300 && base <= 329) return hslToHex(195 + (base % 20), 90, 48); // Blues
+  if (base >= 330 && base <= 357) return hslToHex(160 + (base % 20), 85, 42); // Teals/Greens
+  if (base >= 358 && base <= 399) return hslToHex(75 + (base % 20), 80, 50); // Limes
+  if (base >= 400 && base <= 499) return hslToHex(28 + (base % 20), 30, 45);  // Browns
+  if (base >= 500 && base <= 589) return hslToHex(145 + (base % 20), 20, 60); // Muted sage/gray
+  if (base >= 600 && base <= 699) return hslToHex(282 + (base % 20), 25, 50); // Muted Plum
+  if (base >= 700 && base <= 799) return hslToHex(205 + (base % 20), 25, 48); // Slate Blue
+  if (base >= 800 && base <= 899) {
+    if (base >= 871 && base <= 876) return '#86724C';
+    return '#a1a1aa';
+  }
+
+  const hue = (base * 23) % 360;
+  return hslToHex(hue, 70, 50);
+};
+
+// Convers LAB Color Space to sRGB safely (Highly crucial for Adobe Illustrator LAB ASE profiles)
+const labToRgb = (l, a, b) => {
+  let L = l * 100;
+  let A = a;
+  let B = b;
+
+  if (Math.abs(a) <= 1.0 && Math.abs(b) <= 1.0) {
+    A = a * 128;
+    B = b * 128;
+  }
+
+  let y = (L + 16) / 116;
+  let x = A / 500 + y;
+  let z = y - B / 200;
+
+  const fn = (v) => {
+    return (v * v * v > 0.008856) ? v * v * v : (v - 16 / 116) / 7.787;
+  };
+
+  x = 0.95047 * fn(x);
+  y = 1.00000 * fn(y);
+  z = 1.08883 * fn(z);
+
+  let r = x * 3.2406 + y * -1.5372 + z * -0.4986;
+  let g = x * -0.9689 + y * 1.8758 + z * 0.0415;
+  let b_rgb = x * 0.0557 + y * -0.2040 + z * 1.0570;
+
+  const adjust = (v) => {
+    v = v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v;
+    return Math.max(0, Math.min(255, Math.round(v * 255)));
+  };
+
+  return { r: adjust(r), g: adjust(g), b: adjust(b_rgb) };
+};
+
+// ASE (Adobe Swatch Exchange) Binary File Parser
+const parseAseSwatches = (arrayBuffer) => {
+  const view = new DataView(arrayBuffer);
+  if (view.byteLength < 12) return [];
+  
+  const sig = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+  if (sig !== 'ASEF') {
+    throw new Error('올바른 Adobe Swatch Exchange (.ase) 파일이 아닙니다.');
+  }
+  
+  const blockCount = view.getUint32(8);
+  let offset = 12;
+  const swatches = [];
+  
+  for (let i = 0; i < blockCount; i++) {
+    if (offset >= view.byteLength) break;
+    const blockType = view.getUint16(offset);
+    const blockLength = view.getUint32(offset + 2);
+    offset += 6;
+    
+    if (blockType === 0x0001) {
+      let blockOffset = offset;
+      const nameLen = view.getUint16(blockOffset);
+      blockOffset += 2;
+      
+      let name = '';
+      for (let n = 0; nameLen > 0 && n < nameLen - 1; n++) {
+        name += String.fromCharCode(view.getUint16(blockOffset));
+        blockOffset += 2;
+      }
+      if (nameLen > 0) blockOffset += 2;
+      
+      const colorModel = String.fromCharCode(
+        view.getUint8(blockOffset),
+        view.getUint8(blockOffset + 1),
+        view.getUint8(blockOffset + 2),
+        view.getUint8(blockOffset + 3)
+      ).trim();
+      blockOffset += 4;
+      
+      let hex = '#cbd5e1';
+      if (colorModel === 'RGB') {
+        const r = Math.round(view.getFloat32(blockOffset) * 255);
+        const g = Math.round(view.getFloat32(blockOffset + 4) * 255);
+        const b = Math.round(view.getFloat32(blockOffset + 8) * 255);
+        hex = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+      } else if (colorModel === 'CMYK') {
+        const c = view.getFloat32(blockOffset);
+        const m = view.getFloat32(blockOffset + 4);
+        const y = view.getFloat32(blockOffset + 8);
+        const k = view.getFloat32(blockOffset + 12);
+        
+        const r = Math.round(255 * (1 - c) * (1 - k));
+        const g = Math.round(255 * (1 - m) * (1 - k));
+        const b = Math.round(255 * (1 - y) * (1 - k));
+        hex = '#' + [r, g, b].map(x => Math.max(0, Math.min(255, x)).toString(16).padStart(2, '0')).join('');
+      } else if (colorModel === 'LAB') {
+        const l = view.getFloat32(blockOffset, false);
+        const a = view.getFloat32(blockOffset + 4, false);
+        const b = view.getFloat32(blockOffset + 8, false);
+        const rgbVal = labToRgb(l, a, b);
+        hex = '#' + [rgbVal.r, rgbVal.g, rgbVal.b].map(x => x.toString(16).padStart(2, '0')).join('');
+      } else if (colorModel === 'Gray') {
+        const gray = Math.round(view.getFloat32(blockOffset) * 255);
+        hex = '#' + [gray, gray, gray].map(x => x.toString(16).padStart(2, '0')).join('');
+      }
+      
+      swatches.push({ name: name || `Swatch ${swatches.length + 1}`, hex });
+    }
+    offset += blockLength;
+  }
+  return swatches;
+};
+
+// Formats the selected design type nicely into CJK bilingual form
+const getDesignTypeString = (type, custom) => {
+  if (type === '글루 용기 라벨') return '글루 용기 라벨 / 胶水容器 标签';
+  if (type === '글루 파우치 라벨') return '글루 파우치 라벨 / 胶水铝箔袋 标签';
+  if (type === '펌제 파우치 인쇄') return '펌제 파우치 인쇄 / 烫剂小袋 印刷';
+  if (type === '단상자') return '단상자 / 包装盒';
+  if (type === '용기 실크인쇄') return '용기 실크인쇄 / 容器 丝印';
+  if (type === '기타') return `${custom || '기타'} / 其它`;
+  return '미지정 / 未指定';
+};
+
+// Prepress Color Spec String Parser using advanced CJK Tokenizer
+const parseColorInput = (input, dynamicAseMap = {}) => {
+  if (!input) return [];
+  
+  // Protect CMYK commas before parsing
+  let placeholder = input;
+  const cmykMatches = [];
+  const cmykRegex = /(?:cmyk\s*)?\d{1,3}\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/gi;
+  
+  let match;
+  let id = 0;
+  while ((match = cmykRegex.exec(input)) !== null) {
+    const key = `__CMYK_PLACEHOLDER_${id}__`;
+    cmykMatches.push({ key, val: match[0] });
+    placeholder = placeholder.replace(match[0], key);
+    id++;
+  }
+  
+  const parts = placeholder.split(/[,/|]/);
+  
+  const finalColors = parts.map(part => {
+    let trimmed = part.trim();
+    if (!trimmed) return null;
+    
+    // Restore CMYK
+    const matchCmyk = cmykMatches.find(m => trimmed.includes(m.key));
+    if (matchCmyk) {
+      trimmed = trimmed.replace(matchCmyk.key, matchCmyk.val);
+    }
+    
+    const trimPartLower = trimmed.toLowerCase();
+    const normPart = normalizeColorName(trimmed);
+    
+    // 0. Prioritize exact matching from User Uploaded & learned .ase swatches!
+    if (dynamicAseMap[normPart]) {
+      return { name: trimmed, hex: dynamicAseMap[normPart] };
+    }
+    if (dynamicAseMap[trimPartLower]) {
+      return { name: trimmed, hex: dynamicAseMap[trimPartLower] };
+    }
+    
+    // 1. Detect Hex values
+    const hexMatch = trimPartLower.match(/#([0-9a-f]{3,6})/);
+    if (hexMatch) {
+      return { name: trimmed, hex: `#${hexMatch[1]}` };
+    }
+    
+    // 2. Detect CMYK
+    const cmykMatch = trimPartLower.match(/(?:cmyk|c)?\s*(\d+)\s*[\s,/\-]?\s*(?:m)?\s*(\d+)\s*[\s,/\-]?\s*(?:y)?\s*(\d+)\s*[\s,/\-]?\s*(?:k)?\s*(\d+)/i);
+    if (cmykMatch) {
+      const c = parseInt(cmykMatch[1]) / 100;
+      const m = parseInt(cmykMatch[2]) / 100;
+      const y = parseInt(cmykMatch[3]) / 100;
+      const k = parseInt(cmykMatch[4]) / 100;
+      
+      const r = Math.round(255 * (1 - c) * (1 - k));
+      const g = Math.round(255 * (1 - m) * (1 - k));
+      const b = Math.round(255 * (1 - y) * (1 - k));
+      
+      const toHex = (num) => {
+        const hex = Math.max(0, Math.min(255, num)).toString(16);
+        return hex.length === 1 ? '0' + hex : hex;
+      };
+      return { name: trimmed, hex: `#${toHex(r)}${toHex(g)}${toHex(b)}` };
+    }
+    
+    // 3. Detect standard Spot Pantone numbers
+    const pantoneMatch = trimPartLower.match(/(?:pantone|pms)?\s*([0-9a-z\s]+)/);
+    if (pantoneMatch) {
+      const code = pantoneMatch[1].trim();
+      if (PANTONE_MAP[code]) {
+        return { name: trimmed, hex: PANTONE_MAP[code] };
+      }
+      const digitsMatch = code.match(/\d+/);
+      if (digitsMatch) {
+        let num = parseInt(digitsMatch[0]);
+        if (PANTONE_MAP[num.toString()]) {
+          return { name: trimmed, hex: PANTONE_MAP[num.toString()] };
+        }
+        const hex = getHeuristicColor(num);
+        return { name: trimmed, hex };
+      }
+    }
+    
+    // 4. Common colors
+    const COMMON_COLORS = {
+      'red': '#FF0000', 'green': '#008000', 'blue': '#0000FF', 'yellow': '#FFFF00',
+      'black': '#000000', 'white': '#FFFFFF', 'gold': '#D4AF37', 'silver': '#C0C0C0',
+      'bronze': '#CD7F32', 'orange': '#FFA500', 'purple': '#800080', 'pink': '#FFC0CB',
+      'brown': '#A52A2A', 'grey': '#808080', 'gray': '#808080'
+    };
+    if (COMMON_COLORS[trimPartLower]) {
+      return { name: trimmed, hex: COMMON_COLORS[trimPartLower] };
+    }
+    
+    return { name: trimmed, hex: '#cbd5e1' };
+  }).filter(Boolean);
+  
+  return finalColors;
+};
+
+function App() {
+  const [formData, setFormData] = useState({
+    companyName: '',
+    projectName: '',
+    date: new Date().toISOString().split('T')[0],
+    colors: '',
+    finish: '무광',
+    isTransparent: false,
+    foil: '없음',
+    isHologram: false,
+    isRoll: false,
+    unwindDirection: '상',
+    remarks: '',
+    designType: '글루 용기 라벨',
+    customDesignType: '',
+  });
+
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [fileType, setFileType] = useState(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState(null);
+  const [marginPosition, setMarginPosition] = useState('top');
+  const [marginSize, setMarginSize] = useState(180); // Margin height in points (increased to 180 as requested)
+  const [dynamicAseMap, setDynamicAseColors] = useState({}); // Learned swatches
+  const [aseStatusMessage, setAseStatusMessage] = useState(''); // Toast UI message for ASE upload
+  
+  const [processing, setProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('인쇄 여백 병합 및 주입 중...');
+  const [error, setError] = useState(null);
+  const [ordersHistory, setOrdersHistory] = useState([]);
+  const [activeTab, setActiveTab] = useState('injector');
+  const [pdfLibReady, setPdfLibReady] = useState(false);
+  const [cachedFontBytes, setCachedFontBytes] = useState(null);
+  const [cachedChineseFontBytes, setCachedChineseFontBytes] = useState(null);
+  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
+
+  // Safely inject Google Web Fonts into head
+  useEffect(() => {
+    const link1 = document.createElement('link');
+    link1.rel = 'preconnect';
+    link1.href = 'https://fonts.googleapis.com';
+    document.head.appendChild(link1);
+
+    const link2 = document.createElement('link');
+    link2.rel = 'preconnect';
+    link2.href = 'https://fonts.gstatic.com';
+    link2.crossOrigin = 'anonymous';
+    document.head.appendChild(link2);
+
+    const link3 = document.createElement('link');
+    link3.rel = 'stylesheet';
+    link3.href = 'https://fonts.googleapis.com/css2?family=Nanum+Gothic:wght@400;700&family=Noto+Sans+SC:wght@400;700&swap';
+    document.head.appendChild(link3);
+
+    return () => {
+      if (document.head.contains(link1)) document.head.removeChild(link1);
+      if (document.head.contains(link2)) document.head.removeChild(link2);
+      if (document.head.contains(link3)) document.head.removeChild(link3);
+    };
+  }, []);
+
+  // Load pdf-lib & fontkit dynamic CDNs safely
+  useEffect(() => {
+    const scriptPdf = document.createElement('script');
+    scriptPdf.src = 'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+    scriptPdf.async = true;
+    
+    scriptPdf.onload = () => {
+      const scriptFontkit = document.createElement('script');
+      scriptFontkit.src = 'https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js';
+      scriptFontkit.async = true;
+      scriptFontkit.onload = () => {
+        setPdfLibReady(true);
+      };
+      scriptFontkit.onerror = () => {
+        console.error("Failed to load fontkit CDN.");
+        setPdfLibReady(true);
+      };
+      document.body.appendChild(scriptFontkit);
+    };
+    scriptPdf.onerror = () => console.error("Failed to load pdf-lib CDN.");
+    document.body.appendChild(scriptPdf);
+
+    return () => {};
+  }, []);
+
+  // Load history & learned persistent swatches from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('design_orders_history');
+    if (saved) {
+      try {
+        setOrdersHistory(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse history", e);
+      }
+    }
+
+    const learnedSwatches = localStorage.getItem('prepress_learned_swatches');
+    if (learnedSwatches) {
+      try {
+        setDynamicAseColors(JSON.parse(learnedSwatches));
+      } catch (e) {
+        console.error("Failed to parse learned swatches", e);
+      }
+    }
+  }, []);
+
+  const saveToHistory = (dataToSave) => {
+    const updated = [
+      { ...dataToSave, id: Date.now() },
+      ...ordersHistory
+    ].slice(0, 50);
+    setOrdersHistory(updated);
+    localStorage.setItem('design_orders_history', JSON.stringify(updated));
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setUploadedFile(file);
+      setError(null);
+      
+      const isPDF = file.type === 'application/pdf' || file.name.endsWith('.pdf');
+      const isImg = file.type.startsWith('image/');
+
+      if (isPDF) {
+        setFileType('pdf');
+        setFilePreviewUrl(null);
+      } else if (isImg) {
+        setFileType('image');
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setFilePreviewUrl(reader.result);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        setError("지원하지 않는 파일 형식입니다. PDF 또는 이미지(PNG, JPG) 파일을 업로드해주세요.");
+        setUploadedFile(null);
+        setFileType(null);
+        setFilePreviewUrl(null);
+      }
+    }
+  };
+
+  // ASE Swatch File Handler
+  const handleAseUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const swatches = parseAseSwatches(event.target.result);
+          if (swatches.length === 0) {
+            setError("ASE 파일에서 유효한 색상 스와치를 찾지 못했습니다.");
+            return;
+          }
+          
+          // Learn swatches into the system
+          const newAseMap = { ...dynamicAseMap };
+          swatches.forEach(s => {
+            const rawKey = s.name.trim().toLowerCase();
+            const normKey = normalizeColorName(s.name);
+            
+            newAseMap[rawKey] = s.hex;
+            if (normKey) {
+              newAseMap[normKey] = s.hex;
+            }
+          });
+          
+          // Persist the learned swatches inside local storage
+          setDynamicAseColors(newAseMap);
+          localStorage.setItem('prepress_learned_swatches', JSON.stringify(newAseMap));
+          
+          // Show a beautiful success message
+          setAseStatusMessage(`성공: ${swatches.length}개의 색상을 시스템에 영구 학습시켰습니다! 이제 '지정색상' 입력창에 이 색상명만 기입하면 컬러칩이 자동 표시됩니다.`);
+          setError(null);
+          
+          setTimeout(() => {
+            setAseStatusMessage('');
+          }, 6000);
+        } catch (err) {
+          setError(`ASE 파싱 오류: ${err.message}`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  };
+
+  // Safe Multi-CDN Korean font downloader
+  const getKoreanFontBytes = async () => {
+    if (cachedFontBytes) return cachedFontBytes;
+    setProcessingMessage('한글 폰트 엔진 패키징 중... (최초 1회만 수행)');
+
+    const fontUrls = [
+      'https://fonts.gstatic.com/s/nanumgothic/v23/PN_oR9W2q0v7995O6v3q_Lp8_X7uK.ttf', // Google Fonts direct CDN
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf', // jsDelivr Global Mirror
+      'https://unpkg.com/@canvas-fonts/nanum-gothic@1.1.1/NanumGothic.ttf' // unpkg Backup Mirror
+    ];
+
+    for (let i = 0; i < fontUrls.length; i++) {
+      try {
+        const response = await fetch(fontUrls[i]);
+        if (response.ok) {
+          const bytes = await response.arrayBuffer();
+          setCachedFontBytes(bytes);
+          setIsOfflineFallback(false);
+          return bytes;
+        }
+      } catch (err) {
+        console.warn(`Korean font fetch failed from URL ${i + 1}:`, err);
+      }
+    }
+    
+    // Trigger offline/CSP restrictions fallback triggers
+    setIsOfflineFallback(true);
+    return null;
+  };
+
+  // Safe Chinese Font downloader (Unifies to 100% Sans-Serif style)
+  const getChineseFontBytes = async () => {
+    if (cachedChineseFontBytes) return cachedChineseFontBytes;
+    setProcessingMessage('중국어 폰트 라이브러리 구성 중... (최초 1회만 수행)');
+
+    const fontUrls = [
+      'https://unpkg.com/@canvas-fonts/noto-sans-sc@1.0.0/NotoSansSC-Regular.ttf', // Noto Sans SC
+      'https://cdn.jsdelivr.net/npm/@canvas-fonts/noto-sans-sc@1.0.0/NotoSansSC-Regular.ttf'
+    ];
+
+    for (let i = 0; i < fontUrls.length; i++) {
+      try {
+        const response = await fetch(fontUrls[i]);
+        if (response.ok) {
+          const bytes = await response.arrayBuffer();
+          setCachedChineseFontBytes(bytes);
+          return bytes;
+        }
+      } catch (err) {
+        console.warn(`Chinese font fetch failed from URL ${i + 1}:`, err);
+      }
+    }
+    return null;
+  };
+
+  const sanitizeToAscii = (text) => {
+    if (!text) return 'None';
+    let output = text
+      .replace(/고객사명 \/ 客户名称:/g, 'CLIENT NAME:')
+      .replace(/프로젝트명 \/ 项目名称:/g, 'PROJECT TITLE:')
+      .replace(/발주일자 \/ 下单日期:/g, 'ORDER DATE:')
+      .replace(/비고 \/ 备注:/g, 'REMARKS:')
+      .replace(/지정색상 \/ 印刷颜色:/g, 'COLORS SPEC:')
+      .replace(/코팅가공 \/ 表面加工:/g, 'COATING / FINISH:')
+      .replace(/투명원단 여부 \/ 是否透明:/g, 'TRANSPARENT STOCK:')
+      .replace(/박, 홀로그램 \/ 烫金, 全息:/g, 'FOIL / HOLO:')
+      .replace(/롤 풀림방향\(또는 부착방향\) \/ 卷筒展开方向（或出标方向）:/g, 'WINDING DIRECTION:')
+      .replace(/무광 \/ 哑光 \(Matte\)/g, 'Matte')
+      .replace(/유광 \/ 亮光 \(Glossy\)/g, 'Glossy')
+      .replace(/금박 \/ 烫金/g, 'Gold Foil')
+      .replace(/은박 \/ 烫银/g, 'Silver Foil')
+      .replace(/없음 \/ 无/g, 'None')
+      .replace(/기타 \/ 其它/g, 'Other')
+      .replace(/해당없음 \/ 无 \(Sheet\)/g, 'N/A')
+      .replace(/투명 원단 \/ 透明材质/g, 'Transparent Base')
+      .replace(/일반 원단 \/ 普通材质/g, 'Opaque Base')
+      .replace(/롤 제작 \/ 卷筒装/g, 'Roll')
+      .replace(/상 \/ 上/g, 'TOP')
+      .replace(/하 \/ 下/g, 'BOTTOM')
+      .replace(/좌 \/ 左/g, 'LEFT')
+      .replace(/우 \/ 右/g, 'RIGHT');
+
+    return output.replace(/[^\x00-\x7F]/g, '?');
+  };
+
+  // High-DPI Canvas Rendering Engine (Preloads and synchronizes styles to prevent sudden font changes)
+  const generateSlugImage = async (width, marginSize, formData, dynamicAseMap = {}) => {
+    const scale = 4; // 300+ DPI
+    const canvas = document.createElement('canvas');
+    canvas.width = width * scale;
+    canvas.height = marginSize * scale;
+    const ctx = canvas.getContext('2d');
+
+    // Prepress loading synchronizer: Force Await actual browser font compile before drawing
+    try {
+      if (document.fonts) {
+        await Promise.all([
+          document.fonts.load(`bold ${14.5 * scale}px "Nanum Gothic"`),
+          document.fonts.load(`bold ${14.5 * scale}px "Noto Sans SC"`)
+        ]);
+      }
+    } catch (e) {
+      console.warn("Async Webfont preloading timed out. Rendering with local fallbacks.", e);
+    }
+
+    // Determine layout: Switch to single column for narrow packaging / labels
+    const isSingleColumn = width < 550;
+    const scaleLabelSize = isSingleColumn ? 9.5 : 12.5;
+    const scaleValueSize = isSingleColumn ? 10.0 : 13.0;
+    const scaleTitleSize = isSingleColumn ? 11.5 : 14.5;
+    const labelWidth = isSingleColumn ? 135 : 155;
+    const rightColX = isSingleColumn ? 20 : (width / 2);
+
+    // Responsive Row Y Offset Spacing
+    const yClient = isSingleColumn ? 35 : 45;
+    const yProject = isSingleColumn ? 48 : 67;
+    const yDesignType = isSingleColumn ? 61 : 89; // NEW
+    const yDate = isSingleColumn ? 74 : 111;
+    const yRemarks = isSingleColumn ? 169 : 133;
+    
+    const yColors = isSingleColumn ? 87 : 31;
+    const yWarn1 = isSingleColumn ? 100 : 48;
+    const yWarn2 = isSingleColumn ? 111 : 60;
+    
+    const yFinish = isSingleColumn ? 122 : 78;
+    const yTrans = isSingleColumn ? 134 : 101;
+    const yPost = isSingleColumn ? 146 : 124;
+    const yWinding = isSingleColumn ? 158 : 145;
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    // Background
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Red Bilingual Title
+    ctx.fillStyle = '#b91c1c';
+    ctx.font = `bold ${scaleTitleSize * scale}px ${PREPRESS_FONT_STACK}`;
+    ctx.textBaseline = 'top';
+    ctx.fillText('디자인 발주 요청서 / 设计下单申请书', 20 * scale, 15 * scale);
+
+    const drawRow = (label, value, x, y, lWidth = labelWidth, isRedValue = false) => {
+      // Label with slate color
+      ctx.fillStyle = '#475569';
+      ctx.font = `bold ${scaleLabelSize * scale}px ${PREPRESS_FONT_STACK}`;
+      ctx.fillText(label, x * scale, y * scale);
+
+      // Value with dark slate color (or Red if specified)
+      ctx.fillStyle = isRedValue ? '#dc2626' : '#0f172a';
+      ctx.font = `${scaleValueSize * scale}px ${PREPRESS_FONT_STACK}`;
+      ctx.fillText(value || 'None', (x + lWidth) * scale, y * scale);
+    };
+
+    // Metadata left side
+    drawRow('고객사명 / 客户名称:', formData.companyName || '미지정 / 未指定', 20, yClient, labelWidth);
+    drawRow('프로젝트명 / 项目名称:', formData.projectName || '미지정 / 未指定', 20, yProject, labelWidth);
+    drawRow('디자인 유형 / 设计类型:', getDesignTypeString(formData.designType, formData.customDesignType), 20, yDesignType, labelWidth);
+    drawRow('발주일자 / 下单日期:', formData.date, 20, yDate, labelWidth);
+    
+    // Remarks (비고) in red text
+    drawRow('비고 / 备注:', formData.remarks || '없음 / 无', 20, yRemarks, labelWidth, true);
+
+    // Technical specifications right side
+    ctx.fillStyle = '#475569';
+    ctx.font = `bold ${scaleLabelSize * scale}px ${PREPRESS_FONT_STACK}`;
+    ctx.fillText('지정색상 / 印刷颜色:', rightColX * scale, yColors * scale);
+
+    const colorChips = parseColorInput(formData.colors, dynamicAseMap);
+    
+    // Dynamic Winding layout text width measurements to absolutely prevent overlap
+    const windLabel1 = '롤 풀림방향 / 卷筒展开方向';
+    const windLabel2 = '(또는 부착방향) / (或出标方向) :';
+    ctx.font = `bold ${scaleLabelSize * scale}px ${PREPRESS_FONT_STACK}`;
+    const wWidth1 = ctx.measureText(windLabel1).width;
+    const wWidth2 = ctx.measureText(windLabel2).width;
+    const maxWindLabelWidth = Math.max(wWidth1, wWidth2) / scale; // Back to PT scale
+
+    // Dynamic horizontal position for the winding arrow symbol (Gives safe 15pt gap)
+    const windingValX = rightColX + maxWindLabelWidth + 15;
+
+    let currentValX = (rightColX + labelWidth) * scale;
+    ctx.font = `${scaleValueSize * scale}px ${PREPRESS_FONT_STACK}`;
+
+    if (colorChips.length > 0) {
+      colorChips.forEach((chip, idx) => {
+        // Draw color box first (Resized to 11.5x11.5 to match 13pt font)
+        ctx.fillStyle = chip.hex;
+        ctx.fillRect(currentValX, (yColors + 1) * scale, (isSingleColumn ? 9 : 11.5) * scale, (isSingleColumn ? 9 : 11.5) * scale);
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 0.5 * scale;
+        ctx.strokeRect(currentValX, (yColors + 1) * scale, (isSingleColumn ? 9 : 11.5) * scale, (isSingleColumn ? 9 : 11.5) * scale);
+        
+        currentValX += (isSingleColumn ? 13 : 16) * scale; // move past the box + space
+        
+        // Draw text label - Unifying color-code font with standard PREPRESS_FONT_STACK (13.0pt)
+        ctx.fillStyle = '#0f172a';
+        ctx.font = `${scaleValueSize * scale}px ${PREPRESS_FONT_STACK}`;
+        ctx.fillText(chip.name, currentValX, yColors * scale);
+        currentValX += ctx.measureText(chip.name).width;
+        
+        // Draw separate comma if not the last item
+        if (idx < colorChips.length - 1) {
+          ctx.fillText(', ', currentValX, yColors * scale);
+          currentValX += ctx.measureText(', ').width;
+        }
+      });
+      
+      // Draw Split Double-Line warning text to prevent edge cutoff (Enlarged to 8.5pt)
+      ctx.fillStyle = '#dc2626'; // Vivid red
+      ctx.font = `bold ${(isSingleColumn ? 6.8 : 8.5) * scale}px ${PREPRESS_FONT_STACK}`;
+      ctx.fillText('주의: 위 컬러박스는 단순 시각적 참고용으로 실제 컬러 코드와 다릅니다. 컬러코드 텍스트만 참고하세요.', (rightColX + labelWidth) * scale, yWarn1 * scale);
+      ctx.fillText('贴心提示：以上色块仅供视觉参考，与实际颜色代码不同。请仅参考颜色代码文本。', (rightColX + labelWidth) * scale, yWarn2 * scale);
+    } else {
+      const colorVal = formData.colors || '기본도수 / 普通印刷';
+      ctx.fillStyle = '#0f172a';
+      ctx.font = `${scaleValueSize * scale}px ${PREPRESS_FONT_STACK}`;
+      ctx.fillText(colorVal, currentValX, yColors * scale);
+    }
+
+    // FIX: Rectified typo from '무광 / 哑광' and '유광 / 亮광' to '哑光' and '亮光'
+    let finishTxt = formData.finish === '무광' ? '무광 / 哑光 (Matte)' : formData.finish === '유광' ? '유광 / 亮光 (Glossy)' : formData.finish;
+    drawRow('코팅가공 / 表面加工:', finishTxt, rightColX, yFinish, labelWidth);
+    
+    // Render isTransparent value as "예(투명) / 是(...)"
+    let transTxt = formData.isTransparent ? '예(투명) / 是(透明)' : '아니오(불투명) / 否(不透明)';
+    drawRow('투명원단 여부 / 是否透明:', transTxt, rightColX, yTrans, labelWidth);
+    
+    // Restructured Post-processing bilingual strings natively
+    let postProcessingKo = '';
+    let postProcessingZh = '';
+    if (formData.foil !== '없음') {
+      if (formData.foil === '금박') {
+        postProcessingKo = '금박'; postProcessingZh = '烫金';
+      } else if (formData.foil === '은박' || formData.foil === '銀박') {
+        postProcessingKo = '은박'; postProcessingZh = '烫银';
+      } else {
+        postProcessingKo = formData.foil; postProcessingZh = '其它';
+      }
+    }
+    if (formData.isHologram) {
+      if (postProcessingKo) {
+        postProcessingKo += ' + 홀로그램'; postProcessingZh += ' + 全息';
+      } else {
+        postProcessingKo = '홀로그램'; postProcessingZh = '全息';
+      }
+    }
+    if (!postProcessingKo) {
+      postProcessingKo = '없음'; postProcessingZh = '无';
+    }
+    const postProcessingCombined = `${postProcessingKo} / ${postProcessingZh}`;
+    
+    drawRow('박, 홀로그램 / 烫金, 全息:', postProcessingCombined, rightColX, yPost, labelWidth);
+
+    // Winding direction - Split the long label into two lines as requested!
+    ctx.fillStyle = '#475569';
+    ctx.font = `bold ${scaleLabelSize * scale}px ${PREPRESS_FONT_STACK}`;
+    ctx.fillText(windLabel1, rightColX * scale, yWinding * scale);
+    ctx.fillText(windLabel2, rightColX * scale, (yWinding + (isSingleColumn ? 11 : 13)) * scale);
+
+    let winding = '해당없음 / 无';
+    if (formData.isRoll) {
+      winding = formData.unwindDirection === '상' ? '↑' : formData.unwindDirection === '하' ? '↓' : formData.unwindDirection === '좌' ? '←' : '→';
+    }
+    
+    // Render winding indicator arrow vertically centered and enlarged to cover both rows beautifully
+    // Render winding indicator with standard size if "해당없음 / 无" to prevent giant text overlap!
+    const isWindingArrow = formData.isRoll;
+    const finalWindingSize = isWindingArrow ? (isSingleColumn ? 16.0 : 25.0) : (isSingleColumn ? 10.0 : 13.0);
+    const windingYOffset = isWindingArrow ? (isSingleColumn ? 5 : 6) : (isSingleColumn ? 11 : 13);
+
+    ctx.fillStyle = '#0184c7'; // Professional Accent Blue
+    ctx.font = `bold ${finalWindingSize * scale}px ${PREPRESS_FONT_STACK}`; // Dynamic font size applied
+    ctx.fillText(winding, windingValX * scale, (yWinding + windingYOffset) * scale);
+
+    // Export memory canvas to data URL
+    const dataUrl = canvas.toDataURL('image/png');
+    const res = await fetch(dataUrl);
+    return await res.arrayBuffer();
+  };
+
+  // Perform Prepress Slug Injection and Download
+  const handleInjectAndDownload = async () => {
+    if (!uploadedFile) {
+      setError("발주 정보를 추가할 원본 PDF 또는 이미지 파일을 먼저 업로드해주세요.");
+      return;
+    }
+    if (!pdfLibReady || !window.PDFLib) {
+      setError("PDF 라이브러리가 아직 로드되지 않았습니다. 잠시만 기다려주세요.");
+      return;
+    }
+
+    setProcessing(true);
+    setProcessingMessage('인쇄 여백 및 CJK 폰트 처리 중...');
+    setError(null);
+
+    try {
+      const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
+      
+      const [fontBytes, chineseFontBytes] = await Promise.all([
+        getKoreanFontBytes(),
+        getChineseFontBytes()
+      ]);
+      
+      const fileBytes = await uploadedFile.arrayBuffer();
+      let finalPdfDoc;
+
+      const hasFonts = fontBytes && chineseFontBytes && window.fontkit;
+
+      let postProcessingKo = '';
+      let postProcessingZh = '';
+      if (formData.foil !== '없음') {
+        if (formData.foil === '금박') {
+          postProcessingKo = '금박'; postProcessingZh = '烫金';
+        } else if (formData.foil === '은박') {
+          postProcessingKo = '은박'; postProcessingZh = '烫银';
+        } else {
+          postProcessingKo = formData.foil; postProcessingZh = '其它';
+        }
+      }
+      if (formData.isHologram) {
+        if (postProcessingKo) {
+          postProcessingKo += ' + 홀로그램'; postProcessingZh += ' + 全息';
+        } else {
+          postProcessingKo = '홀로그램'; postProcessingZh = '全息';
+        }
+      }
+      if (!postProcessingKo) {
+        postProcessingKo = '없음'; postProcessingZh = '无';
+      }
+      const postProcessingCombined = `${postProcessingKo} / ${postProcessingZh}`;
+
+      if (fileType === 'pdf') {
+        const srcPdfDoc = await PDFDocument.load(fileBytes);
+        finalPdfDoc = await PDFDocument.create();
+        
+        // Register fontkit library to pdf-lib document for custom TTF font parsing
+        if (window.fontkit) {
+          finalPdfDoc.registerFontkit(window.fontkit);
+        } else {
+          console.warn("Fontkit is not available.");
+        }
+        
+        let customFont;
+        let chineseFont;
+
+        if (hasFonts) {
+          customFont = await finalPdfDoc.embedFont(fontBytes);
+          chineseFont = await finalPdfDoc.embedFont(chineseFontBytes);
+        } else {
+          customFont = await finalPdfDoc.embedFont(StandardFonts.HelveticaBold);
+          chineseFont = customFont;
+        }
+
+        const pages = srcPdfDoc.getPages();
+        
+        for (let i = 0; i < pages.length; i++) {
+          setProcessingMessage(`총 ${pages.length}페이지 중 ${i + 1}페이지 여백 병합 중...`);
+          const srcPage = pages[i];
+          const { width, height = 100 } = srcPage.getSize();
+          
+          const newPage = finalPdfDoc.addPage([width, height + marginSize]);
+          const [embeddedPage] = await finalPdfDoc.embedPages([srcPage]);
+          
+          let drawYOfOriginal = 0;
+          let slugYStart = 0;
+
+          if (marginPosition === 'top') {
+            drawYOfOriginal = 0;
+            slugYStart = height;
+          } else {
+            drawYOfOriginal = marginSize;
+            slugYStart = 0;
+          }
+
+          newPage.drawPage(embeddedPage, {
+            x: 0,
+            y: drawYOfOriginal,
+            width: width,
+            height: height,
+          });
+
+          const isSingleColumn = width < 550;
+          const sizeLabel = isSingleColumn ? 9.5 : 12.5;
+          const sizeVal = isSingleColumn ? 10.0 : 13.0;
+          const labelW = isSingleColumn ? 135 : 155;
+          const rightColX = isSingleColumn ? 20 : (width / 2);
+
+          const yClient = isSingleColumn ? (marginSize - 35) : (marginSize - 45);
+          const yProject = isSingleColumn ? (marginSize - 48) : (marginSize - 67);
+          const yDesignType = isSingleColumn ? (marginSize - 61) : (marginSize - 89); // NEW
+          const yDate = isSingleColumn ? (marginSize - 74) : (marginSize - 111);
+          const yRemarks = isSingleColumn ? (marginSize - 173) : (marginSize - 133);
+          
+          const yColors = isSingleColumn ? (marginSize - 74) : (marginSize - 31);
+          const yWarn1 = isSingleColumn ? (marginSize - 100) : (marginSize - 48);
+          const yWarn2 = isSingleColumn ? (marginSize - 111) : (marginSize - 60);
+          
+          const yFinish = isSingleColumn ? (marginSize - 111) : (marginSize - 78);
+          const yTrans = isSingleColumn ? (marginSize - 124) : (marginSize - 101);
+          const yPost = isSingleColumn ? (marginSize - 137) : (marginSize - 124);
+          const yWinding = isSingleColumn ? (marginSize - 150) : (marginSize - 145);
+
+          if (hasFonts) {
+            newPage.drawRectangle({
+              x: 0,
+              y: slugYStart,
+              width: width,
+              height: marginSize,
+              color: rgb(0.97, 0.98, 0.99),
+            });
+
+            newPage.drawLine({
+              start: { x: 0, y: marginPosition === 'top' ? slugYStart : marginSize },
+              end: { x: width, y: marginPosition === 'top' ? slugYStart : marginSize },
+              thickness: 2,
+              color: rgb(0.08, 0.12, 0.2),
+            });
+
+            // Added 'isRedValue' parameter support to drawSlugText in vector mode
+            const drawSlugText = (label, value, x, y, labelWidth = labelW, isRedValue = false) => {
+              const finalLabel = hasFonts ? label : sanitizeToAscii(label);
+              const finalValue = hasFonts ? value : sanitizeToAscii(value);
+              const valueColor = isRedValue ? rgb(0.86, 0.15, 0.15) : rgb(0.05, 0.05, 0.1);
+              
+              if (hasFonts) {
+                const labelParts = finalLabel.split(' / ');
+                let currentX = x;
+                
+                if (labelParts.length > 1) {
+                  newPage.drawText(labelParts[0], {
+                    x: currentX,
+                    y: slugYStart + y,
+                    size: sizeLabel,
+                    font: customFont,
+                    color: rgb(0.3, 0.35, 0.4),
+                  });
+                  currentX += customFont.widthOfTextAtSize(labelParts[0], sizeLabel);
+                  
+                  newPage.drawText(' / ', {
+                    x: currentX,
+                    y: slugYStart + y,
+                    size: sizeLabel,
+                    font: customFont,
+                    color: rgb(0.3, 0.35, 0.4),
+                  });
+                  currentX += customFont.widthOfTextAtSize(' / ', sizeLabel);
+                  
+                  newPage.drawText(labelParts[1], {
+                    x: currentX,
+                    y: slugYStart + y,
+                    size: sizeLabel,
+                    font: chineseFont,
+                    color: rgb(0.3, 0.35, 0.4),
+                  });
+                } else {
+                  newPage.drawText(label, {
+                    x: currentX,
+                    y: slugYStart + y,
+                    size: sizeLabel,
+                    font: customFont,
+                    color: rgb(0.3, 0.35, 0.4),
+                  });
+                }
+
+                let currentValX = x + labelWidth;
+                const valParts = finalValue.split(' / ');
+                
+                if (valParts.length > 1) {
+                  newPage.drawText(valParts[0], {
+                    x: currentValX,
+                    y: slugYStart + y,
+                    size: sizeVal,
+                    font: customFont,
+                    color: valueColor,
+                  });
+                  currentValX += customFont.widthOfTextAtSize(valParts[0], sizeVal);
+                  
+                  newPage.drawText(' / ', {
+                    x: currentValX,
+                    y: slugYStart + y,
+                    size: sizeVal,
+                    font: customFont,
+                    color: valueColor,
+                  });
+                  currentValX += customFont.widthOfTextAtSize(' / ', sizeVal);
+                  
+                  newPage.drawText(valParts[1], {
+                    x: currentValX,
+                    y: slugYStart + y,
+                    size: sizeVal,
+                    font: chineseFont,
+                    color: valueColor,
+                  });
+                } else {
+                  const hasChinese = /[\u4e00-\u9fa5]/.test(value);
+                  newPage.drawText(value, {
+                    x: currentValX,
+                    y: slugYStart + y,
+                    size: sizeVal,
+                    font: hasChinese ? chineseFont : customFont,
+                    color: valueColor,
+                  });
+                }
+              } else {
+                newPage.drawText(finalLabel, {
+                  x: x,
+                  y: slugYStart + y,
+                  size: sizeLabel,
+                  font: customFont,
+                  color: rgb(0.3, 0.35, 0.4),
+                });
+                newPage.drawText(finalValue, {
+                  x: x + labelWidth,
+                  y: slugYStart + y,
+                  size: sizeVal,
+                  font: customFont,
+                  color: valueColor,
+                });
+              }
+            };
+
+            const legendTitle = '디자인 발주 요청서 / 设计下单申请书';
+            const titleParts = legendTitle.split(' / ');
+            const titleSize = isSingleColumn ? 11.5 : 14.5;
+            
+            newPage.drawText(titleParts[0], {
+              x: 20,
+              y: slugYStart + (isSingleColumn ? (marginSize - 18) : (marginSize - 22)),
+              size: titleSize,
+              font: customFont,
+              color: rgb(0.75, 0.1, 0.1),
+            });
+            const titleKoWidth = customFont.widthOfTextAtSize(titleParts[0], titleSize);
+            newPage.drawText(' / ' + titleParts[1], {
+              x: 20 + titleKoWidth,
+              y: slugYStart + (isSingleColumn ? (marginSize - 18) : (marginSize - 22)),
+              size: titleSize,
+              font: chineseFont,
+              color: rgb(0.75, 0.1, 0.1),
+            });
+
+            drawSlugText('고객사명 / 客户名称:', formData.companyName || 'Not Specified', 20, yClient, labelW);
+            drawSlugText('프로젝트명 / 项目名称:', formData.projectName || 'Not Specified', 20, yProject, labelW);
+            drawSlugText('디자인 유형 / 设计类型:', getDesignTypeString(formData.designType, formData.customDesignType), 20, yDesignType, labelW);
+            drawSlugText('발주일자 / 下单日期:', formData.date, 20, yDate, labelW);
+            
+            // Remarks (비고) rendered in RED text
+            drawSlugText('비고 / 备注:', formData.remarks || '없음 / 无', 20, yRemarks, labelW, true);
+
+            const colorLabel = '지정색상 / 印刷颜色:';
+            const colorLabelParts = colorLabel.split(' / ');
+            let cX = rightColX;
+            
+            newPage.drawText(colorLabelParts[0], { x: cX, y: slugYStart + yColors, size: sizeLabel, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+            cX += customFont.widthOfTextAtSize(colorLabelParts[0], sizeLabel);
+            newPage.drawText(' / ', { x: cX, y: slugYStart + yColors, size: sizeLabel, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+            cX += customFont.widthOfTextAtSize(' / ', sizeLabel);
+            newPage.drawText(colorLabelParts[1], { x: cX, y: slugYStart + yColors, size: sizeLabel, font: chineseFont, color: rgb(0.3, 0.35, 0.4) });
+
+            const colorsVal = formData.colors || '기본도수 / 普通印刷';
+            let colorsValX = rightColX + labelW;
+
+            const imgSwatches = parseColorInput(formData.colors, dynamicAseMap);
+            
+            if (imgSwatches.length > 0) {
+              imgSwatches.forEach((swatch, idx) => {
+                const rgbCol = hexToRgb(swatch.hex);
+                const swatchBoxSize = isSingleColumn ? 9.0 : 11.5;
+                const swatchYOffset = isSingleColumn ? 1.0 : 1.5;
+                
+                newPage.drawRectangle({
+                  x: colorsValX,
+                  y: slugYStart + yColors - swatchYOffset,
+                  width: swatchBoxSize,
+                  height: swatchBoxSize,
+                  color: rgb(rgbCol.r, rgbCol.g, rgbCol.b),
+                  borderColor: rgb(0.7, 0.7, 0.7),
+                  borderWidth: 0.5,
+                });
+                colorsValX += (isSingleColumn ? 13 : 16);
+                
+                const hasChColors = /[\u4e00-\u9fa5]/.test(swatch.name);
+                const fontToUse = hasChColors ? chineseFont : customFont;
+                newPage.drawText(swatch.name, {
+                  x: colorsValX,
+                  y: slugYStart + yColors,
+                  size: sizeVal,
+                  font: fontToUse,
+                  color: rgb(0.05, 0.05, 0.1),
+                });
+                colorsValX += fontToUse.widthOfTextAtSize(swatch.name, sizeVal);
+                
+                if (idx < imgSwatches.length - 1) {
+                  newPage.drawText(', ', {
+                    x: colorsValX,
+                    y: slugYStart + yColors,
+                    size: sizeVal,
+                    font: customFont,
+                    color: rgb(0.05, 0.05, 0.1),
+                  });
+                  colorsValX += customFont.widthOfTextAtSize(', ', sizeVal);
+                }
+              });
+              
+              newPage.drawText('주의: 위 컬러박스는 단순 시각적 참고용으로 실제 컬러 코드와 다릅니다. 컬러코드 텍스트만 참고하세요.', {
+                x: rightColX + labelW,
+                y: slugYStart + yWarn1,
+                size: isSingleColumn ? 6.5 : 8.5,
+                font: customFont,
+                color: rgb(0.86, 0.15, 0.15),
+              });
+              newPage.drawText('贴心提示：以上色块仅供视觉参考，与实际颜色代码不同。请仅参考颜色代码文本。', {
+                x: rightColX + labelW,
+                y: slugYStart + yWarn2,
+                size: isSingleColumn ? 6.5 : 8.5,
+                font: chineseFont,
+                color: rgb(0.86, 0.15, 0.15),
+              });
+            } else {
+              const hasChColors = /[\u4e00-\u9fa5]/.test(colorsVal);
+              newPage.drawText(colorsVal, {
+                x: colorsValX,
+                y: slugYStart + yColors,
+                size: sizeVal,
+                font: hasChColors ? chineseFont : customFont,
+                color: rgb(0.05, 0.05, 0.1),
+              });
+            }
+
+            // FIX: Replaced typo '무광 / 哑광' and '유광 / 亮광' with '哑光' and '亮光'
+            let finishTxt = formData.finish === '무광' ? '무광 / 哑光 (Matte)' : formData.finish === '유광' ? '유광 / 亮光 (Glossy)' : formData.finish;
+            drawSlugText('코팅가공 / 表面加工:', finishTxt, rightColX, yFinish, labelW);
+            
+            let transTxt = formData.isTransparent ? '예(투명) / 是(透明)' : '아니오(불투명) / 否(不透明)';
+            drawSlugText('투명원단 여부 / 是否透明:', transTxt, rightColX, yTrans, labelW);
+            
+            drawSlugText('박, 홀로그램 / 烫금, 全息:', postProcessingCombined, rightColX, yPost, labelW);
+
+            // Draw Winding Direction in split rows to natively prevent text overlap
+            const windLabel1 = '롤 풀림방향 / 卷筒展开方向';
+            const windLabel2 = '(또는 부착방향) / (或出标方向) :';
+            let wX = rightColX;
+            
+            newPage.drawText(windLabel1, {
+              x: wX,
+              y: slugYStart + yWinding,
+              size: sizeLabel,
+              font: customFont, // Contains common CJK glyphs
+              color: rgb(0.3, 0.35, 0.4),
+            });
+
+            const yWindingLine2 = yWinding - (isSingleColumn ? 11 : 13);
+            newPage.drawText(windLabel2, {
+              x: wX,
+              y: slugYStart + yWindingLine2,
+              size: sizeLabel,
+              font: customFont,
+              color: rgb(0.3, 0.35, 0.4),
+            });
+
+            // Dynamic width computation to safely place enlarged arrow
+            const widthLine1 = customFont.widthOfTextAtSize(windLabel1, sizeLabel);
+            const widthLine2 = customFont.widthOfTextAtSize(windLabel2, sizeLabel);
+            const maxWindLabelWidth = Math.max(widthLine1, widthLine2);
+
+            const windingValX = rightColX + maxWindLabelWidth + 15; // Dynamic spacing!
+
+            let winding = '해당없음 / 无';
+            if (formData.isRoll) {
+              winding = formData.unwindDirection === '상' ? '↑' : formData.unwindDirection === '하' ? '↓' : formData.unwindDirection === '좌' ? '←' : '→';
+            }
+            
+            const hasChineseWinding = /[\u4e00-\u9fa5]/.test(winding);
+            const yWindingArrow = yWindingLine2 + (isSingleColumn ? 1 : 2); // Center baseline alignment
+            
+            // FIX: Render vector winding indicator with size 25.0pt but if it's "해당없음 / 无" render with standard 13.0pt to prevent oversized text!
+            const isWindingArrow = formData.isRoll;
+            const finalWindingPdfSize = isWindingArrow ? (isSingleColumn ? 16.0 : 25.0) : (isSingleColumn ? 10.0 : 13.0);
+            const finalPdfWindingY = isWindingArrow ? yWindingArrow : yWindingLine2;
+
+            newPage.drawText(winding, {
+              x: windingValX,
+              y: slugYStart + finalPdfWindingY,
+              size: finalWindingPdfSize, // Dynamic font size applied
+              font: hasChineseWinding ? chineseFont : customFont,
+              color: rgb(0.01, 0.52, 0.78),
+            });
+          } else {
+            const slugBytes = await generateSlugImage(width, marginSize, formData, dynamicAseMap);
+            const slugImage = await finalPdfDoc.embedPng(slugBytes);
+            newPage.drawImage(slugImage, {
+              x: 0,
+              y: slugYStart,
+              width: width,
+              height: marginSize,
+            });
+          }
+        }
+      } else {
+        // 2. Process IMAGE File
+        finalPdfDoc = await PDFDocument.create();
+        
+        if (window.fontkit) {
+          finalPdfDoc.registerFontkit(window.fontkit);
+        }
+        
+        let customFont;
+        let chineseFont;
+
+        if (hasFonts) {
+          customFont = await finalPdfDoc.embedFont(fontBytes);
+          chineseFont = await finalPdfDoc.embedFont(chineseFontBytes);
+        } else {
+          customFont = await finalPdfDoc.embedFont(StandardFonts.HelveticaBold);
+          chineseFont = customFont;
+        }
+
+        let image;
+        if (uploadedFile.type === 'image/png') {
+          image = await finalPdfDoc.embedPng(fileBytes);
+        } else {
+          image = await finalPdfDoc.embedJp2k(fileBytes).catch(() => finalPdfDoc.embedJpg(fileBytes));
+        }
+
+        const imgWidth = image.width;
+        const imgHeight = image.height;
+
+        const page = finalPdfDoc.addPage([imgWidth, imgHeight + marginSize]);
+        
+        let drawYOfOriginal = 0;
+        let slugYStart = 0;
+
+        if (marginPosition === 'top') {
+          drawYOfOriginal = 0;
+          slugYStart = imgHeight;
+        } else {
+          drawYOfOriginal = marginSize;
+          slugYStart = 0;
+        }
+
+        page.drawRectangle({
+          x: 0,
+          y: 0,
+          width: imgWidth,
+          height: imgHeight + marginSize,
+          color: rgb(1, 1, 1),
+        });
+
+        page.drawImage(image, {
+          x: 0,
+          y: drawYOfOriginal,
+          width: imgWidth,
+          height: imgHeight,
+        });
+
+        page.drawLine({
+          start: { x: 0, y: marginPosition === 'top' ? slugYStart : marginSize },
+          end: { x: imgWidth, y: marginPosition === 'top' ? slugYStart : marginSize },
+          thickness: 3,
+          color: rgb(0.1, 0.1, 0.15),
+        });
+
+        if (hasFonts) {
+          const isSingleColumn = imgWidth < 550;
+          const sizeLabel = isSingleColumn ? 9.5 : 12.5;
+          const sizeVal = isSingleColumn ? 10.0 : 13.0;
+          const colSpacing = isSingleColumn ? 135 : (imgWidth * 0.16);
+          const leftColX = 30;
+          const rightColX = isSingleColumn ? 30 : (imgWidth / 2);
+
+          const yClient = isSingleColumn ? (marginSize - 35) : (marginSize - 45);
+          const yProject = isSingleColumn ? (marginSize - 48) : (marginSize - 67);
+          const yDesignType = isSingleColumn ? (marginSize - 61) : (marginSize - 89); // NEW
+          const yDate = isSingleColumn ? (marginSize - 74) : (marginSize - 111);
+          const yRemarks = isSingleColumn ? (marginSize - 173) : (marginSize - 124);
+          
+          const yColors = isSingleColumn ? (marginSize - 74) : (marginSize - 31);
+          const yWarn1 = isSingleColumn ? (marginSize - 87) : (marginSize - 48);
+          const yWarn2 = isSingleColumn ? (marginSize - 97) : (marginSize - 60);
+          
+          const yFinish = isSingleColumn ? (marginSize - 109) : (marginSize - 78);
+          const yTrans = isSingleColumn ? (marginSize - 122) : (marginSize - 101);
+          const yPost = isSingleColumn ? (marginSize - 135) : (marginSize - 124);
+          const yWinding = isSingleColumn ? (marginSize - 148) : (marginSize - 145);
+
+          const drawSlugText = (label, value, x, y, labelWidth = colSpacing, isRedValue = false) => {
+            const fontSizeLabel = imgWidth * 0.021 > 14.5 ? 14.5 : sizeLabel;
+            const fontSizeVal = imgWidth * 0.022 > 15 ? 15 : sizeVal;
+            const valueColor = isRedValue ? rgb(0.86, 0.15, 0.15) : rgb(0.0, 0.0, 0.1);
+
+            const labelParts = label.split(' / ');
+            let currentX = x;
+            if (labelParts.length > 1) {
+              page.drawText(labelParts[0], {
+                x: currentX,
+                y: slugYStart + y,
+                size: fontSizeLabel,
+                font: customFont,
+                color: rgb(0.3, 0.35, 0.4),
+              });
+              currentX += customFont.widthOfTextAtSize(labelParts[0], fontSizeLabel);
+              
+              page.drawText(' / ', {
+                x: currentX,
+                y: slugYStart + y,
+                size: fontSizeLabel,
+                font: customFont,
+                color: rgb(0.3, 0.35, 0.4),
+              });
+              currentX += customFont.widthOfTextAtSize(' / ', fontSizeLabel);
+              
+              page.drawText(labelParts[1], {
+                x: currentX,
+                y: slugYStart + y,
+                size: fontSizeLabel,
+                font: chineseFont,
+                color: rgb(0.3, 0.35, 0.4),
+              });
+            } else {
+              page.drawText(label, {
+                x: currentX,
+                y: slugYStart + y,
+                size: fontSizeLabel,
+                font: customFont,
+                color: rgb(0.3, 0.35, 0.4),
+              });
+            }
+
+            let currentValX = x + labelWidth;
+            const valParts = value.split(' / ');
+            if (valParts.length > 1) {
+              page.drawText(valParts[0], {
+                x: currentValX,
+                y: slugYStart + y,
+                size: fontSizeVal,
+                font: customFont,
+                color: valueColor,
+              });
+              currentValX += customFont.widthOfTextAtSize(valParts[0], fontSizeVal);
+
+              page.drawText(' / ', {
+                x: currentValX,
+                y: slugYStart + y,
+                size: fontSizeVal,
+                font: customFont,
+                color: valueColor,
+              });
+              currentValX += customFont.widthOfTextAtSize(' / ', fontSizeVal);
+
+              page.drawText(valParts[1], {
+                x: currentValX,
+                y: slugYStart + y,
+                size: fontSizeVal,
+                font: chineseFont,
+                color: valueColor,
+              });
+            } else {
+              const hasChinese = /[\u4e00-\u9fa5]/.test(value);
+              page.drawText(value, {
+                x: currentValX,
+                y: slugYStart + y,
+                size: fontSizeVal,
+                font: hasChinese ? chineseFont : customFont,
+                color: valueColor,
+              });
+            }
+          };
+
+          const legendTitle = '디자인 발주 요청서 / 设计下单申请书';
+          page.drawText(legendTitle, {
+            x: 30,
+            y: slugYStart + marginSize - 22,
+            size: imgWidth * 0.024 > 18.5 ? 18.5 : 14.5,
+            font: customFont,
+            color: rgb(0.7, 0.1, 0.15),
+          });
+
+          drawSlugText('고객사명 / 客户名称:', formData.companyName || 'Not Specified', leftColX, yClient, colSpacing);
+          drawSlugText('프로젝트명 / 项目名称:', formData.projectName || 'Not Specified', leftColX, yProject, colSpacing);
+          drawSlugText('디자인 유형 / 设计类型:', getDesignTypeString(formData.designType, formData.customDesignType), leftColX, yDesignType, colSpacing);
+          drawSlugText('발주일자 / 下单日期:', formData.date, leftColX, yDate, colSpacing);
+          drawSlugText('비고 / 备注:', formData.remarks || '없음 / 无', leftColX, yRemarks, colSpacing, true);
+
+          const colLabelSize = imgWidth * 0.021 > 14.5 ? 14.5 : sizeLabel;
+          const colValSize = imgWidth * 0.022 > 15 ? 15 : sizeVal;
+
+          const imgColorLabel = '지정색상 / 印刷颜色:';
+          const imgColorLabelParts = imgColorLabel.split(' / ');
+          let cX = rightColX;
+          page.drawText(imgColorLabelParts[0], { x: cX, y: slugYStart + yColors, size: colLabelSize, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+          cX += customFont.widthOfTextAtSize(imgColorLabelParts[0], colLabelSize);
+          page.drawText(' / ', { x: cX, y: slugYStart + yColors, size: colLabelSize, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+          cX += customFont.widthOfTextAtSize(' / ', colLabelSize);
+          page.drawText(imgColorLabelParts[1], { x: cX, y: slugYStart + yColors, size: colLabelSize, font: chineseFont, color: rgb(0.3, 0.35, 0.4) });
+
+          const imgColorsVal = formData.colors || '기본도수 / 普通印刷';
+          let imgColorsValX = rightColX + colSpacing;
+
+          const imgSwatches = parseColorInput(formData.colors, dynamicAseMap);
+          if (imgSwatches.length > 0) {
+            imgSwatches.forEach((swatch, idx) => {
+              const rgbCol = hexToRgb(swatch.hex);
+              
+              page.drawRectangle({
+                x: imgColorsValX,
+                y: slugYStart + yColors - (isSingleColumn ? 1.0 : 1.5),
+                width: 11.5,
+                height: 11.5,
+                color: rgb(rgbCol.r, rgbCol.g, rgbCol.b),
+                borderColor: rgb(0.7, 0.7, 0.7),
+                borderWidth: 0.5,
+              });
+              imgColorsValX += 16;
+
+              const hasChColors = /[\u4e00-\u9fa5]/.test(swatch.name);
+              const fontToUse = hasChColors ? chineseFont : customFont;
+              page.drawText(swatch.name, {
+                x: imgColorsValX,
+                y: slugYStart + yColors,
+                size: colValSize,
+                font: fontToUse,
+                color: rgb(0.0, 0.0, 0.1),
+              });
+              imgColorsValX += fontToUse.widthOfTextAtSize(swatch.name, colValSize);
+
+              if (idx < imgSwatches.length - 1) {
+                page.drawText(', ', {
+                  x: imgColorsValX,
+                  y: slugYStart + yColors,
+                  size: colValSize,
+                  font: customFont,
+                  color: rgb(0.0, 0.0, 0.1),
+                });
+                imgColorsValX += customFont.widthOfTextAtSize(', ', colValSize);
+              }
+            });
+            
+            page.drawText('주의: 위 컬러박스는 단순 시각적 참고용으로 실제 컬러 코드와 다릅니다. 컬러코드 텍스트만 참고하세요.', {
+              x: rightColX + colSpacing,
+              y: slugYStart + yWarn1,
+              size: colLabelSize * 0.7,
+              font: customFont,
+              color: rgb(0.86, 0.15, 0.15),
+            });
+            page.drawText('贴心提示：以上色块仅供视觉参考，与实际颜色代码不同。请仅参考颜色代码文本。', {
+              x: rightColX + colSpacing,
+              y: slugYStart + yWarn2,
+              size: colLabelSize * 0.7,
+              font: chineseFont,
+              color: rgb(0.86, 0.15, 0.15),
+            });
+          } else {
+            const hasChColors = /[\u4e00-\u9fa5]/.test(imgColorsVal);
+            page.drawText(imgColorsVal, {
+              x: imgColorsValX,
+              y: slugYStart + yColors,
+              size: colValSize,
+              font: hasChColors ? chineseFont : customFont,
+              color: rgb(0.0, 0.0, 0.1),
+            });
+          }
+
+          // FIX: Replaced '무광 / 哑광' and '유광 / 亮광' with '哑光' and '亮光'
+          let finishTxt = formData.finish === '무광' ? '무광 / 哑光 (Matte)' : formData.finish === '유광' ? '유광 / 亮光 (Glossy)' : formData.finish;
+          drawSlugText('코팅가공 / 表面加工:', finishTxt, rightColX, yFinish, colSpacing);
+          
+          let transTxt = formData.isTransparent ? '예(투명) / 是(...)' : '아니오(불투명) / 否(不透明)';
+          drawSlugText('투명원단 여부 / 是否透明:', transTxt, rightColX, yTrans, colSpacing);
+          
+          drawSlugText('박, 홀로그램 / 烫金, 全息:', postProcessingCombined, rightColX, yPost, colSpacing);
+
+          const imgWindLabel1 = '롤 풀림방향 / 卷筒展开方向:';
+          const imgWindLabel2 = '(또는 부착방향) / (或出标方向) :';
+          let wX = rightColX;
+          page.drawText(imgWindLabel1.split(' / ')[0], { x: wX, y: slugYStart + yWinding, size: colLabelSize, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+          let tempX = wX + customFont.widthOfTextAtSize(imgWindLabel1.split(' / ')[0], colLabelSize);
+          page.drawText(' / ', { x: tempX, y: slugYStart + yWinding, size: colLabelSize, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+          tempX += customFont.widthOfTextAtSize(' / ', colLabelSize);
+          page.drawText(imgWindLabel1.split(' / ')[1], { x: tempX, y: slugYStart + yWinding, size: colLabelSize, font: chineseFont, color: rgb(0.3, 0.35, 0.4) });
+
+          const yImgWindingLine2 = yWinding - (isSingleColumn ? 11 : 13);
+          page.drawText(imgWindLabel2.split(' / ')[0], { x: wX, y: slugYStart + yImgWindingLine2, size: colLabelSize, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+          let tempX2 = wX + customFont.widthOfTextAtSize(imgWindLabel2.split(' / ')[0], colLabelSize);
+          page.drawText(' / ', { x: tempX2, y: slugYStart + yImgWindingLine2, size: colLabelSize, font: customFont, color: rgb(0.3, 0.35, 0.4) });
+          tempX2 += customFont.widthOfTextAtSize(' / ', colLabelSize);
+          page.drawText(imgWindLabel2.split(' / ')[1], { x: tempX2, y: slugYStart + yImgWindingLine2, size: colLabelSize, font: chineseFont, color: rgb(0.3, 0.35, 0.4) });
+
+          let imgWinding = '해당없음 / 无';
+          if (formData.isRoll) {
+            imgWinding = formData.unwindDirection === '상' ? '↑' : formData.unwindDirection === '하' ? '↓' : formData.unwindDirection === '좌' ? '←' : '→';
+          }
+          const imgWindingValX = rightColX + colSpacing;
+          const hasChWinding = /[\u4e00-\u9fa5]/.test(imgWinding);
+          const yImgWindingArrow = yImgWindingLine2 + (isSingleColumn ? 1 : 2);
+          
+          // Render fallback image winding indicator with standard size if "해당없음 / 无" to prevent giant text overlap!
+          const isImgWindingArrow = formData.isRoll;
+          const finalImgWindingSize = isImgWindingArrow ? (colValSize + (isSingleColumn ? 4.5 : 6.5)) : colValSize;
+          const finalImgWindingY = isImgWindingArrow ? yImgWindingArrow : yImgWindingLine2;
+
+          page.drawText(imgWinding, {
+            x: imgWindingValX,
+            y: slugYStart + finalImgWindingY,
+            size: finalImgWindingSize,
+            font: hasChWinding ? chineseFont : customFont,
+            color: rgb(0.01, 0.52, 0.78),
+          });
+        } else {
+          // Bypasses CSP restrictions for images
+          const slugBytes = await generateSlugImage(imgWidth, marginSize, formData, dynamicAseMap);
+          const slugImage = await finalPdfDoc.embedPng(slugBytes);
+          page.drawImage(slugImage, {
+            x: 0,
+            y: slugYStart,
+            width: imgWidth,
+            height: marginSize,
+          });
+        }
+      }
+
+      setProcessingMessage('최종 완성 파일 압축 인코딩 중...');
+      const finalPdfBytes = await finalPdfDoc.save();
+      const blob = new Blob([finalPdfBytes], { type: 'application/pdf' });
+      const downloadUrl = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `Prepress_${formData.companyName || 'Order'}_${formData.projectName || 'Design'}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      saveToHistory({
+        ...formData,
+        fileName: uploadedFile.name,
+        fileType: fileType
+      });
+
+    } catch (err) {
+      console.error(err);
+      setError(`발주 사양 주입 중 오류가 발생했습니다. (사유: ${err.message}) PDF가 손상되었거나 일러스트레이터 아웃라인 호환 중 오류일 수 있으니 다른 규격 파일을 어도비 일러스트레이터로 검토해 보세요.`);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleClear = () => {
+    setFormData({
+      companyName: '',
+      projectName: '',
+      date: new Date().toISOString().split('T')[0],
+      colors: '',
+      finish: '무광',
+      isTransparent: false,
+      foil: '없음',
+      isHologram: false,
+      isRoll: false,
+      unwindDirection: '상',
+      remarks: '',
+      designType: '글루 용기 라벨',
+      customDesignType: '',
+    });
+    setUploadedFile(null);
+    setFileType(null);
+    setFilePreviewUrl(null);
+    setError(null);
+  };
+
+  const handleChange = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 text-slate-800 font-sans antialiased">
+      <header className="bg-slate-900 text-white shadow">
+        <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="bg-amber-500 p-2 rounded-lg text-slate-950">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-xl md:text-2xl font-black tracking-tight">Prepress 디자인 발주 마진 주입기</h1>
+              <p className="text-xs text-slate-400">원본 PDF/디자인 파일 상단 및 하단에 편집 가능한 발주 가이드 슬러그 영역을 실시간으로 병합합니다.</p>
+            </div>
+          </div>
+          <div className="flex bg-slate-800 p-1.5 rounded-lg border border-slate-700">
+            <button onClick={() => setActiveTab('injector')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === 'injector' ? 'bg-amber-500 text-slate-950 shadow' : 'text-slate-300 hover:text-white'}`}>마진 주입기</button>
+            <button onClick={() => setActiveTab('guide')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === 'guide' ? 'bg-amber-500 text-slate-950 shadow' : 'text-slate-300 hover:text-white'}`}>인쇄 실무 표준 (출처)</button>
+            <button onClick={() => setActiveTab('history')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${activeTab === 'history' ? 'bg-amber-500 text-slate-950 shadow' : 'text-slate-300 hover:text-white'}`}>저장 기록 ({ordersHistory.length})</button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-7xl mx-auto mb-6 bg-blue-50 border-2 border-blue-200 rounded-xl p-4 text-xs text-blue-900 shadow-sm">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <div>
+              <p className="font-bold text-blue-950">💡 한글 및 중국어 깨짐 완벽 복구 안내 (하이브리드 프리프레스 합성 엔진 탑재)</p>
+              <p className="mt-1 leading-relaxed">현재 브라우저 보안 제약으로 인해 폰트 임베딩이 불가능한 경우에도 **고해상도 다국어 그래픽 합성 엔진**이 자동으로 가동되어 글자가 깨지거나 영어로 바뀌지 않고 완벽한 한글/중국어로 다운로드됩니다.</p>
+              <p className="mt-1 font-semibold text-blue-950">일러스트레이터(AI)에서 완전히 편집 가능한 벡터 텍스트 트랙 레이어가 필요하시다면, 우측 미리보기 상단의 <span className="underline font-bold">"새 창에서 열기(Open in New Tab)"</span> 아이콘을 누르고 단독 탭에서 다운로드해 주세요!</p>
+            </div>
+          </div>
+        </div>
+
+        {activeTab === 'injector' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            <div className="lg:col-span-5 space-y-6">
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b">
+                  <span className="bg-slate-900 text-white font-bold text-xs px-2 py-1 rounded">Step 1</span>
+                  <h2 className="text-sm font-bold text-slate-900">고객사 원본 파일 업로드</h2>
+                </div>
+                <div className="flex items-center justify-center w-full">
+                  <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer bg-slate-50 hover:bg-slate-100 transition-all">
+                    <div className="flex flex-col items-center justify-center pt-5 pb-6 text-center px-4">
+                      <svg className="w-8 h-8 mb-2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                      <p className="text-xs font-bold text-slate-700">고객사 오리지널 디자인 파일 업로드</p>
+                      <p className="text-[11px] text-slate-400 mt-1">PDF 또는 인쇄 시안 이미지 (PNG, JPG)</p>
+                    </div>
+                    <input type="file" accept="application/pdf, image/*" onChange={handleFileChange} className="hidden" />
+                  </label>
+                </div>
+                {uploadedFile && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex justify-between items-center text-xs">
+                    <div className="space-y-0.5 truncate pr-3">
+                      <p className="font-bold text-slate-900 truncate">📂 {uploadedFile.name}</p>
+                      <p className="text-[10px] text-slate-500 font-mono">{(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB | 형식: {fileType ? fileType.toUpperCase() : '알 수 없음'}</p>
+                    </div>
+                    <button onClick={() => { setUploadedFile(null); setFileType(null); setFilePreviewUrl(null); }} className="text-red-500 hover:text-red-700 font-bold px-2 py-1 bg-white border border-red-200 rounded shrink-0 transition-colors">제거</button>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 space-y-4">
+                <div className="flex justify-between items-center pb-2 border-b">
+                  <div className="flex items-center gap-2">
+                    <span className="bg-slate-900 text-white font-bold text-xs px-2 py-1 rounded">Step 2</span>
+                    <h2 className="text-sm font-bold text-slate-900">사내 발주 규격 정보 입력</h2>
+                  </div>
+                  <button onClick={handleClear} className="text-xs text-slate-400 hover:text-slate-600 font-semibold">초기화</button>
+                </div>
+                {aseStatusMessage && <div className="bg-emerald-50 border-2 border-emerald-300 text-emerald-950 p-3 rounded-lg text-[11px] font-bold animate-fade-in">🎉 {aseStatusMessage}</div>}
+                <div className="space-y-3.5 text-xs">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">고객사명</label>
+                      <input type="text" value={formData.companyName} onChange={(e) => handleChange('companyName', e.target.value)} placeholder="예: 네이처푸드" className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1 focus:ring-slate-900" />
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">프로젝트명</label>
+                      <input type="text" value={formData.projectName} onChange={(e) => handleChange('projectName', e.target.value)} placeholder="예: 사과즙 라벨 시안" className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1 focus:ring-slate-900" />
+                    </div>
+                  </div>
+
+                  {/* DESIGN TYPE SELECT FIELD */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">발주 디자인 유형</label>
+                      <select 
+                        value={formData.designType} 
+                        onChange={(e) => handleChange('designType', e.target.value)} 
+                        className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1"
+                      >
+                        <option value="글루 용기 라벨">글루 용기 라벨 / 胶水容器 标签</option>
+                        <option value="글루 파우치 라벨">글루 파우치 라벨 / 胶水铝箔袋 标签</option>
+                        <option value="펌제 파우치 인쇄">펌제 파우치 인쇄 / 烫剂小袋 印刷</option>
+                        <option value="단상자">단상자 / 包装盒</option>
+                        <option value="용기 실크인쇄">용기 실크인쇄 / 容器 丝印</option>
+                        <option value="기타">기타 / 其它</option>
+                      </select>
+                    </div>
+                    {formData.designType === '기타' ? (
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">기타 유형 입력</label>
+                        <input 
+                          type="text" 
+                          value={formData.customDesignType} 
+                          onChange={(e) => handleChange('customDesignType', e.target.value)} 
+                          placeholder="예: 스티커 인쇄" 
+                          className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1"
+                        />
+                      </div>
+                    ) : (
+                      <div className="hidden md:block"></div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">발주일자</label>
+                      <input type="date" value={formData.date} onChange={(e) => handleChange('date', e.target.value)} className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1" />
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">지정 인쇄 색상 (CMYK / 팬톤)</label>
+                      <input type="text" value={formData.colors} onChange={(e) => handleChange('colors', e.target.value)} placeholder="예: Pantone 245C, Pantone 566C, CMYK 100, 0, 30, 20" className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1" />
+                      {formData.colors && (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5 bg-slate-50 p-2 border rounded-md">
+                          {parseColorInput(formData.colors, dynamicAseMap).map((chip, idx) => (
+                            <div key={idx} className="flex items-center gap-1.5 bg-white border px-1.5 py-0.5 rounded shadow-sm text-[10px]">
+                              <span className="w-2.5 h-2.5 rounded-sm border inline-block shrink-0" style={{ backgroundColor: chip.hex }}></span>
+                              <span className="text-slate-600 font-medium truncate max-w-[120px]" title={chip.name}>{chip.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="mt-2">
+                        <label className="flex items-center gap-1.5 justify-center w-full py-1.5 border border-dashed border-slate-300 rounded-lg cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors text-[10px] font-bold text-indigo-700 hover:text-indigo-900 border-indigo-200 hover:border-indigo-400">
+                          <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                          <span>Illustrator 스와치(.ase) 파일에서 색상 가져기</span>
+                          <input type="file" accept=".ase" onChange={handleAseUpload} className="hidden" />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1.5">표면 가공 처리 (무광/유광)</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {['무광', '유광', '기타', '해당없음'].map(item => (
+                        <button key={item} type="button" onClick={() => handleChange('finish', item)} className={`py-1.5 text-xs font-bold rounded border transition-all ${formData.finish === item ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{item}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1.5">박(금박/은박) 여부</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {['없음', '금박', '은박', '기타'].map(item => (
+                        <button key={item} type="button" onClick={() => handleChange('foil', item)} className={`py-1.5 text-xs font-bold rounded border transition-all ${formData.foil === item ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{item}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                    <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                      <input type="checkbox" checked={formData.isTransparent} onChange={(e) => handleChange('isTransparent', e.target.checked)} className="rounded text-slate-900 focus:ring-slate-900 h-4 w-4" />
+                      <span>투명지 원단 여부</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                      <input type="checkbox" checked={formData.isHologram} onChange={(e) => handleChange('isHologram', e.target.checked)} className="rounded text-slate-900 focus:ring-slate-900 h-4 w-4" />
+                      <span>홀로그램 특수가공</span>
+                    </label>
+                  </div>
+                  <div className="p-3 border border-slate-200 bg-slate-50 rounded-lg space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-800">
+                        <input type="checkbox" checked={formData.isRoll} onChange={(e) => handleChange('isRoll', e.target.checked)} className="rounded text-slate-900 focus:ring-slate-900 h-4 w-4" />
+                        <span>자동 부착용 "롤" 제작 여부</span>
+                      </label>
+                    </div>
+                    {formData.isRoll ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[11px] font-bold text-slate-600">롤 풀림방향(또는 부착방향) / 卷筒展开方向（或出标方向）</label>
+                          <span className="text-xs bg-sky-100 text-sky-800 border border-sky-200 px-1.5 rounded font-black animate-pulse">
+                            지정 방향: {formData.unwindDirection === '상' && '↑'}{formData.unwindDirection === '하' && '↓'}{formData.unwindDirection === '좌' && '←'}{formData.unwindDirection === '우' && '→'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2">
+                          {['상', '하', '좌', '우'].map((dir) => (
+                            <button key={dir} type="button" onClick={() => handleChange('unwindDirection', dir)} className={`py-1 text-xs font-bold rounded border flex flex-col items-center gap-0.5 ${formData.unwindDirection === dir ? 'bg-amber-500 text-slate-900 border-amber-500' : 'bg-white text-slate-600 border-slate-200'}`}>
+                              <span className="text-sm font-black">{dir === '상' && '↑'}{dir === '하' && '↓'}{dir === '좌' && '←'}{dir === '우' && '→'}</span>
+                              <span>{dir}향 풀림</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-400 italic">시트(낱장) 재단 제작으로 설정됨. 롤라벨 적용 시 위 옵션을 체크하세요.</div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">비고 및 예외 사양 사항</label>
+                    <textarea rows="2" value={formData.remarks} onChange={(e) => handleChange('remarks', e.target.value)} placeholder="예: 아웃라인 필수 적용 요망. 칼선 핀 마진 1.5mm 유지" className="w-full text-xs p-2 border border-slate-300 rounded focus:ring-1 resize-none" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b">
+                  <span className="bg-slate-900 text-white font-bold text-xs px-2 py-1 rounded">Step 3</span>
+                  <h2 className="text-sm font-bold text-slate-900">슬러그 여부 주입 설정</h2>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">여백 마진 위치</label>
+                    <select value={marginPosition} onChange={(e) => setMarginPosition(e.target.value)} className="w-full p-2 border border-slate-300 rounded">
+                      <option value="top">상단 여백에 추가 (Top)</option>
+                      <option value="bottom">하단 여백에 추가 (Bottom)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">여백 높이 크기 (Points)</label>
+                    <select value={marginSize} onChange={(e) => setMarginSize(Number(e.target.value))} className="w-full p-2 border border-slate-300 rounded">
+                      <option value={130}>130 pt (심플 라벨용)</option>
+                      <option value={160}>160 pt (표준 패키지용)</option>
+                      <option value={180}>180 pt (확장 패키지용 - 권장)</option>
+                      <option value={200}>200 pt (비고가 길 때 추천)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-7 space-y-4">
+              <div className="bg-slate-900 text-white p-4 rounded-xl shadow flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="animate-pulse w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                  <span className="text-xs font-bold uppercase tracking-wider">PREPRESS SLUG PREVIEW</span>
+                </div>
+                <button onClick={handleInjectAndDownload} disabled={processing || !uploadedFile} className={`px-5 py-2 rounded text-xs font-black shadow transition-all flex items-center gap-1.5 ${!uploadedFile ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : processing ? 'bg-amber-400 text-slate-900 cursor-wait' : 'bg-amber-500 hover:bg-amber-600 text-slate-950 active:scale-95'}`}>
+                  {processing ? (
+                    <><svg className="animate-spin h-4 w-4 text-slate-900" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>{processingMessage}</>
+                  ) : (
+                    <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>발주 마진 주입 및 최종 PDF 받기</>
+                  )}
+                </button>
+              </div>
+
+              <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-6 flex flex-col justify-between overflow-hidden">
+                <p className="text-xs text-slate-500 font-semibold mb-4">※ 업로드 파일 및 생성될 발주 슬러그 여백 공간의 합성 레이아웃입니다.</p>
+                <div className="border border-slate-300 rounded-lg overflow-hidden bg-slate-50 flex flex-col relative animate-fade-in">
+                  {marginPosition === 'top' && (
+                    <div className="bg-slate-100 border-b border-dashed border-slate-400 p-4 space-y-2 text-[10px] text-slate-850 font-sans" style={{ fontFamily: PREPRESS_FONT_STACK }}>
+                      <div className="text-red-600 font-bold tracking-tight text-xs flex justify-between">
+                        <span>■ 디자인 발주 요청서 / 设计下单申请书</span>
+                        <span className="text-slate-400 font-normal">Height: {marginSize}pt</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 py-1.5 bg-white/70 p-2 rounded border">
+                        <div><b>고객사명 / 客户名称:</b> {formData.companyName || '미입력'}</div>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <b>지정색상 / 印刷颜色:</b> 
+                          {parseColorInput(formData.colors, dynamicAseMap).length > 0 ? (
+                            <span className="inline-flex flex-wrap items-center">
+                              {parseColorInput(formData.colors, dynamicAseMap).map((chip, idx) => (
+                                <span key={idx} className="inline-flex items-center gap-1.5 mr-2 animate-fade-in">
+                                  <span className="w-2.5 h-2.5 rounded-sm border border-slate-300 inline-block shadow-sm" style={{ backgroundColor: chip.hex }}></span>
+                                  <span className="font-sans text-[9px] font-medium">{chip.name}</span>
+                                  {idx < parseColorInput(formData.colors, dynamicAseMap).length - 1 && <span className="text-slate-400 font-sans">,</span>}
+                                </span>
+                              ))}
+                            </span>
+                          ) : (<span>미입력</span>)}
+                          {parseColorInput(formData.colors, dynamicAseMap).length > 0 && (
+                            <div className="text-[7.5px] text-red-600 font-extrabold w-full mt-1.5 leading-none font-sans animate-pulse">주의: 위 컬러박스는 단순 시각적 참고용으로 실제 컬러 코드와 다릅니다. 컬러코드 텍스트만 참고하세요. / 贴心提示：以上色块仅供视觉参考，与实际颜色代码不同。请仅参考颜色代码文本。</div>
+                          )}
+                        </div>
+                        <div><b>프로젝트명 / 项目名称:</b> {formData.projectName || '미입력'}</div>
+                        <div><b>코팅가공 / 表面加工:</b> {formData.finish === '무광' ? '무광 / 哑광 (Matte)' : formData.finish === '유광' ? '유광 / 亮광 (Glossy)' : formData.finish}</div>
+                        <div><b>발주 디자인 유형 / 设计类型:</b> {getDesignTypeString(formData.designType, formData.customDesignType)}</div>
+                        <div><b>투명원단 여부 / 是否透明:</b> {formData.isTransparent ? '예(투명) / 是(透明)' : '아니오(불투명) / 否(不透明)'}</div>
+                        <div><b>발주일자 / 下单日期:</b> {formData.date}</div>
+                        <div><b>박, 홀로그램 / 烫金, 全息:</b> {
+                          (() => {
+                            let postKo = ''; let postZh = '';
+                            if (formData.foil !== '없음') {
+                              postKo = formData.foil === '금박' ? '금박' : formData.foil === '은박' ? '은박' : formData.foil;
+                              postZh = formData.foil === '금박' ? '烫金' : formData.foil === '은박' ? '烫银' : '其它';
+                            }
+                            if (formData.isHologram) {
+                              postKo = postKo ? `${postKo} + 홀로그램` : '홀로그램';
+                              postZh = postZh ? `${postZh} + 全息` : '全息';
+                            }
+                            return postKo ? `${postKo} / ${postZh}` : '없음 / 无';
+                          })()
+                        }</div>
+                        <div className="flex flex-col font-sans">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold">롤 풀림방향 / 卷筒展开方向:</span>
+                            {formData.isRoll ? (
+                              <span className="w-5 h-5 rounded-full border border-sky-600 text-sky-850 bg-sky-50 inline-flex items-center justify-center font-black text-xs shadow-sm shrink-0">
+                                {formData.unwindDirection === '상' && '↑'}{formData.unwindDirection === '하' && '↓'}{formData.unwindDirection === '좌' && '←'}{formData.unwindDirection === '우' && '→'}
+                              </span>
+                            ) : (<span className="text-[9px] text-slate-400">해당없음 / 无</span>)}
+                          </div>
+                          <div className="text-[9px] text-slate-400 leading-none mt-0.5">(또는 부착방향) / (或出标方向)</div>
+                        </div>
+                      </div>
+                      <div className="truncate"><b>비고 / 备注:</b> <span className="text-red-650 font-extrabold">{formData.remarks || 'None'}</span></div>
+                    </div>
+                  )}
+
+                  <div className="h-96 w-full relative flex items-center justify-center bg-slate-200 overflow-hidden">
+                    {filePreviewUrl ? (
+                      <div className="relative w-full h-full p-4 flex items-center justify-center">
+                        <img src={filePreviewUrl} alt="Uploaded preview" className="max-w-full max-h-full object-contain rounded shadow" />
+                        <div className="absolute top-2 right-2 bg-slate-900/80 text-white px-2 py-0.5 rounded text-[10px] font-bold">원본 이미지</div>
+                      </div>
+                    ) : uploadedFile && fileType === 'pdf' ? (
+                      <div className="text-center p-8 space-y-2 animate-pulse">
+                        <div className="bg-indigo-100 text-indigo-700 w-12 h-12 rounded-full flex items-center justify-center mx-auto shadow-inner">
+                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                        </div>
+                        <p className="text-sm font-bold text-slate-800">고객사 벡터 PDF 파일 대기 중</p>
+                        <p className="text-xs text-slate-500 font-mono max-w-sm mx-auto truncate bg-slate-100 p-1.5 rounded">{uploadedFile.name}</p>
+                      </div>
+                    ) : (
+                      <div className="text-center text-slate-400 p-6">
+                        <svg className="w-10 h-10 mx-auto mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                        <p className="text-xs font-bold">Step 1에서 고객사가 준 PDF/디자인 시안을 업로드해 주세요.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {marginPosition === 'bottom' && (
+                    <div className="bg-slate-100 border-t border-dashed border-slate-400 p-4 space-y-2 text-[10px] text-slate-850 font-sans" style={{ fontFamily: PREPRESS_FONT_STACK }}>
+                      <div className="text-red-600 font-bold tracking-tight text-xs flex justify-between">
+                        <span>■ 디자인 발주 요청서 / 设计下单申请书</span>
+                        <span className="text-slate-400 font-normal">Height: {marginSize}pt</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 py-1.5 bg-white/70 p-2 rounded border">
+                        <div><b>고객사명 / 客户名称:</b> {formData.companyName || '미입력'}</div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <b>지정색상 / 印刷颜色:</b> 
+                          {parseColorInput(formData.colors, dynamicAseMap).length > 0 ? (
+                            <span className="inline-flex flex-wrap items-center animate-fade-in">
+                              {parseColorInput(formData.colors, dynamicAseMap).map((chip, idx) => (
+                                <span key={idx} className="inline-flex items-center gap-1.5 mr-2">
+                                  {/* Color Swatch in FRONT of text */}
+                                  <span className="w-2.5 h-2.5 rounded-sm border border-slate-300 inline-block shadow-sm" style={{ backgroundColor: chip.hex }}></span>
+                                  <span>{chip.name}</span>
+                                  {idx < parseColorInput(formData.colors, dynamicAseMap).length - 1 && <span className="text-slate-400">,</span>}
+                                </span>
+                              ))}
+                            </span>
+                          ) : (<span>미입력</span>)}
+                          {parseColorInput(formData.colors, dynamicAseMap).length > 0 && (
+                            <div className="text-[7.5px] text-red-600 font-extrabold w-full mt-1.5 leading-none font-sans animate-pulse">주의: 위 컬러박스는 단순 시각적 참고용으로 실제 컬러 코드와 다릅니다. 컬러코드 텍스트만 참고하세요. / 贴心提示：以上色块仅供视觉参考，与实际颜色代码不同。请仅参考颜色代码文本。</div>
+                          )}
+                        </div>
+                        <div><b>프로젝트명 / 项目名称:</b> {formData.projectName || '미입력'}</div>
+                        <div><b>코팅가공 / 表面加工:</b> {formData.finish === '무광' ? '무광 / 哑광 (Matte)' : formData.finish === '유광' ? '유광 / 亮광 (Glossy)' : formData.finish}</div>
+                        <div><b>발주 디자인 유형 / 设计类型:</b> {getDesignTypeString(formData.designType, formData.customDesignType)}</div>
+                        <div><b>투명원단 여부 / 是否透明:</b> {formData.isTransparent ? '예(투명) / 是(透明)' : '아니오(불투명) / 否(不透明)'}</div>
+                        <div><b>발주일자 / 下单日期:</b> {formData.date}</div>
+                        <div><b>박, 홀로그램 / 烫金, 全息:</b> {
+                          (() => {
+                            let postKo = ''; let postZh = '';
+                            if (formData.foil !== '없음') {
+                              postKo = formData.foil === '금박' ? '금박' : formData.foil === '은박' ? '은박' : formData.foil;
+                              postZh = formData.foil === '금박' ? '烫金' : formData.foil === '은박' ? '烫银' : '其它';
+                            }
+                            if (formData.isHologram) {
+                              postKo = postKo ? `${postKo} + 홀로그램` : '홀로그램';
+                              postZh = postZh ? `${postZh} + 全息` : '全息';
+                            }
+                            return postKo ? `${postKo} / ${postZh}` : '없음 / 无';
+                          })()
+                        }</div>
+                        <div className="flex flex-col font-sans">
+                          {/* Live Preview label adjusted to be split cleanly on two rows to avoid overlaps */}
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold">롤 풀림방향(또는 부착방향) / 卷筒展开方向（或出标方向）:</span>
+                            {formData.isRoll ? (
+                              <span className="w-5 h-5 rounded-full border border-sky-600 text-sky-850 bg-sky-50 inline-flex items-center justify-center font-black text-xs shadow-sm shrink-0">
+                                {formData.unwindDirection === '상' && '↑'}{formData.unwindDirection === '하' && '↓'}{formData.unwindDirection === '좌' && '←'}{formData.unwindDirection === '우' && '→'}
+                              </span>
+                            ) : (<span className="text-[9px] text-slate-400">해당없음 / 无</span>)}
+                          </div>
+                          <div className="text-[9px] text-slate-400 leading-none mt-0.5">(또는 부착방향) / (或出标方向)</div>
+                        </div>
+                      </div>
+                      <div className="truncate"><b>비고 / 备注:</b> <span className="text-red-650 font-extrabold">{formData.remarks || 'None'}</span></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'guide' && (
+          <div className="bg-white rounded-xl shadow border border-slate-200 p-6 max-w-4xl mx-auto space-y-6">
+            <div className="border-b pb-4">
+              <h2 className="text-xl font-bold text-slate-900">Prepress 슬러그 여백 인쇄 표준 가이드</h2>
+              <p className="text-xs text-slate-500 mt-1">인쇄판 제판 및 포장 패키지 합판 시 오발주를 원천 봉쇄하기 위한 기계 가이드라인 설명입니다.</p>
+            </div>
+            <div className="space-y-4 text-xs leading-relaxed text-slate-600">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm mb-1">■ 슬러그(Slug) 혹은 작업 레전드(Legend) 란?</h3>
+                <p>인쇄용 최종 원본 데이터의 실재 재단선 바깥쪽에 별도로 추가하는 지시서 영역입니다. 여백 영역만 확장해 정보를 기록하므로 공장 디자이너들이 작업 파일(.ai) 자체에서 직접 이 텍스트를 즉시 확인하고 서체를 변환할 수 있습니다.</p>
+              </div>
+              <div className="pt-6 border-t border-slate-200">
+                <h4 className="font-bold text-slate-900 text-xs mb-3 flex items-center gap-1.5">
+                  <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                  기술 규격 가이드라인 및 공정 정보 표준 출처
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="bg-slate-50 p-3 rounded border border-slate-200">
+                    <p className="font-bold text-slate-700">ISO 12647 인쇄 기술 표준 규격</p>
+                    <p className="text-slate-500 mt-1">글로벌 프리프레스 데이터 교환 규격 및 제판 표준 여백 Slug 표준 가이드 준수.</p>
+                  </div>
+                  <div className="bg-slate-50 p-3 rounded border border-slate-200">
+                    <p className="font-bold text-slate-700">대한인쇄문화협회 (KOPLA)</p>
+                    <p className="text-slate-500 mt-1">인쇄 제판 여백 가공 허용 수치 및 특수 박가공 동판 제조 표준 가이드라인 배포.</p>
+                    <a href="http://www.print.or.kr" target="_blank" rel="noopener noreferrer" className="text-amber-600 hover:underline mt-1 inline-block font-semibold">공식 기술 가이드 바로가기 →</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'history' && (
+          <div className="bg-white rounded-xl shadow border border-slate-200 p-6 max-w-4xl mx-auto">
+            <div className="border-b pb-4 mb-6">
+              <h2 className="text-xl font-bold text-slate-900">최근 주입 내역 기록</h2>
+              <p className="text-xs text-slate-500 mt-1">브라우저 로컬 저장소에 저장되어 있는 슬러그 마진 주입 목록입니다.</p>
+            </div>
+            {ordersHistory.length === 0 ? (
+              <p className="text-center py-12 text-slate-400 text-xs">최근에 인쇄 마진을 생성한 내역이 없습니다.</p>
+            ) : (
+              <div className="space-y-3 text-xs">
+                {ordersHistory.map(item => (
+                  <div key={item.id} className="border p-4 rounded-lg bg-slate-50 flex justify-between items-center">
+                    <div>
+                      <p className="font-bold text-slate-900">{item.companyName || '고객사 미정'} - {item.projectName || '프로젝트 미정'}</p>
+                      <p className="text-[10px] text-slate-500 mt-1">날짜: {item.date} | 색상: {item.colors} | 마진: {item.finish} 코팅</p>
+                    </div>
+                    <button onClick={() => setFormData(item)} className="text-amber-600 hover:text-amber-800 font-bold">불러오기</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+document.getElementById('loading').style.display='none';
+</script>
+</body>
+</html>
