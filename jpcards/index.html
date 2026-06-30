@@ -443,11 +443,17 @@ function loadVoices(){
     }else{
       sel.disabled=false;
       TTS.voices.forEach((v,i)=>{const o=document.createElement('option');o.value=i;o.textContent=v.name;sel.appendChild(o);});
-      // 저장된 선택 복원
+      // 저장된 선택이 있으면 우선 복원
       let saved=null;try{saved=localStorage.getItem('jp_voice');}catch(_){}
-      const idx=TTS.voices.findIndex(v=>v.name===saved);
-      sel.value=idx>=0?idx:0;
-      TTS.ja=TTS.voices[sel.value]||TTS.voices[0];
+      let idx=TTS.voices.findIndex(v=>v.name===saved);
+      // 저장된 게 없으면 'Google 일본어' 음성을 기본으로 (있을 때만)
+      if(idx<0){
+        idx=TTS.voices.findIndex(v=>/google/i.test(v.name));
+      }
+      // 그래도 없으면 첫 번째 음성
+      if(idx<0)idx=0;
+      sel.value=idx;
+      TTS.ja=TTS.voices[idx]||TTS.voices[0];
     }
   }
   TTS.ready=true;
