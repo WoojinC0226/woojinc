@@ -184,6 +184,38 @@ header.top{display:flex;align-items:center;justify-content:space-between}
 .g-tip li{margin:4px 0}
 .g-tip li b{color:var(--ink)}
 
+
+/* 자동재생 (자면서 듣기) */
+.autoplay{display:none;flex-direction:column;gap:16px}
+.autoplay.active{display:flex}
+.ap-intro{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;font-size:13px;color:var(--sub);line-height:1.7}
+.ap-intro b{color:var(--ink)}
+.ap-note{font-size:12px;color:var(--faint);line-height:1.6;padding:0 4px}
+.ap-play{display:none;flex-direction:column;gap:26px;align-items:center;padding-top:20px}
+.ap-play.active{display:flex}
+.ap-now{text-align:center;min-height:220px;display:flex;flex-direction:column;justify-content:center;gap:10px}
+.ap-deck-label{font-size:12px;font-weight:800;color:var(--iadj);letter-spacing:.04em}
+.ap-word{font-size:60px;font-weight:800;letter-spacing:-.02em;line-height:1.1}
+.ap-pron{font-size:20px;color:var(--iadj);font-weight:700}
+.ap-mean{font-size:26px;font-weight:700}
+.ap-phase{font-size:12px;color:var(--faint);font-weight:700;letter-spacing:.1em;margin-top:8px;height:16px}
+.ap-controls{display:flex;align-items:center;gap:20px}
+.ap-btn{width:56px;height:56px;border-radius:50%;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);font-size:20px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:transform .1s}
+.ap-btn:active{transform:scale(.92)}
+.ap-btn.ap-main{width:72px;height:72px;font-size:26px;background:var(--iadj);color:#0e1116;border:none}
+.ap-count{font-size:13px;color:var(--faint);font-weight:600}
+
+
+.ap-gap{display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:4px}
+.ap-gap-lbl{font-size:11px;color:var(--faint);font-weight:700;letter-spacing:.05em}
+.ap-gap-btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.ap-gap-btns button{background:var(--panel);border:1px solid var(--line);color:var(--sub);
+  font-size:12px;font-weight:700;padding:7px 12px;border-radius:20px;cursor:pointer}
+.ap-gap-btns button.on{background:var(--iadj);color:#0e1116;border-color:var(--iadj)}
+.ap-gap-btns button:active{transform:scale(.95)}
+
 @media(max-width:380px){.front .jp{font-size:54px}}
 </style>
 </head>
@@ -201,6 +233,11 @@ header.top{display:flex;align-items:center;justify-content:space-between}
       <span class="gtxt"><b>문법 가이드</b><span>활용 규칙 · て형 · 문장 만들기 팁</span></span>
       <span class="garr">›</span>
     </button>
+    <button class="guide-btn" id="autoplayBtn">
+      <span class="gico">🎧</span>
+      <span class="gtxt"><b>자면서 듣기</b><span>일본어 2회 → 한국어 1회 자동 반복 재생</span></span>
+      <span class="garr">›</span>
+    </button>
     <div class="decks" id="deckList"></div>
     <div class="theory">
       <b>🧠 어떻게 외우면 효과적일까</b>
@@ -208,6 +245,43 @@ header.top{display:flex;align-items:center;justify-content:space-between}
       <div class="row"><span class="ic">🖼️</span><span><b>이중 부호화</b> — 문자(눈) + 발음(소리) + 뜻을 함께 묶으면 인출 단서가 늘어 더 오래 남아요.</span></div>
       <div class="row"><span class="ic">💭</span><span><b>능동적 회상</b> — 뒤집기 전에 <b>먼저 떠올려보세요.</b> 떠올리려 애쓰는 그 순간 기억이 강해집니다.</span></div>
       <div class="row"><span class="ic">✅</span><span><b>자기평가</b> — 솔직하게 "모르겠다"를 누를수록 알고리즘이 정확해져요.</span></div>
+    </div>
+  </section>
+
+  <!-- 자동재생 (자면서 듣기) -->
+  <section class="autoplay" id="autoplay">
+    <div class="sbar">
+      <button class="back" id="autoBack">‹</button>
+      <div style="font-weight:800;font-size:17px">🎧 자면서 듣기</div>
+    </div>
+    <div class="ap-pick" id="apPick">
+      <p class="ap-intro">덱을 고르면 그 안의 단어를 <b>일본어 2회 → 한국어 1회</b> 순으로 자동 재생합니다. 끝까지 가면 처음부터 무한 반복해요. 화면을 켜둔 채 들으세요.</p>
+      <div class="decks" id="apDeckList"></div>
+      <p class="ap-note">💡 화면이 꺼지면 소리도 멈출 수 있어요. 자동 잠금을 끄거나 충전기를 꽂아두면 오래 재생됩니다.</p>
+    </div>
+    <div class="ap-play" id="apPlay">
+      <div class="ap-now">
+        <div class="ap-deck-label" id="apDeckLabel"></div>
+        <div class="ap-word" id="apWord">준비 중…</div>
+        <div class="ap-pron" id="apPron"></div>
+        <div class="ap-mean" id="apMean"></div>
+        <div class="ap-phase" id="apPhase"></div>
+      </div>
+      <div class="ap-controls">
+        <button id="apPrev" class="ap-btn">⏮</button>
+        <button id="apToggle" class="ap-btn ap-main">⏸</button>
+        <button id="apNext" class="ap-btn">⏭</button>
+      </div>
+      <div class="ap-count"><span id="apIdx">0</span> / <span id="apTot">0</span></div>
+      <div class="ap-gap">
+        <span class="ap-gap-lbl">단어 간격</span>
+        <div class="ap-gap-btns">
+          <button data-gap="short">짧게</button>
+          <button data-gap="normal" class="on">보통</button>
+          <button data-gap="long">길게</button>
+          <button data-gap="verylong">아주 길게</button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -473,6 +547,25 @@ function speak(text,btn){
     u.onend=u.onerror=()=>btn.classList.remove('playing');}
   speechSynthesis.speak(u);
 }
+// 언어 지정 + 완료 콜백 버전 (자동재생용)
+function speakLang(text,lang,cb){
+  if(!('speechSynthesis' in window)||!text){if(cb)cb();return;}
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang=lang;
+  if(lang.startsWith('ja')&&TTS.ja)u.voice=TTS.ja;
+  else{ // 한국어 음성 있으면 지정
+    const ko=speechSynthesis.getVoices().find(v=>/ko/i.test(v.lang));
+    if(ko)u.voice=ko;
+  }
+  u.rate=0.9;u.pitch=1.0;
+  u.onend=()=>{if(cb)cb();};
+  u.onerror=()=>{if(cb)cb();};
+  speechSynthesis.speak(u);
+}
+// 한국어 뜻 음성용 정리 (·, 여러뜻 → 첫 번째만, 괄호 제거)
+function cleanKo(m){
+  return String(m).split(/[·,\/]/)[0].replace(/[（(].*?[）)]/g,'').trim();
+}
 
 let state={}; // {deck:{idx:{box,due,seen}}}
 async function loadState(){
@@ -651,6 +744,119 @@ document.getElementById('wordSpk').addEventListener('click',e=>{
 
 
 // 문법 가이드
+
+// ===== 자동재생 (자면서 듣기) =====
+const AP={deck:null,idx:0,playing:false,timer:null,gapJa:1200,gapKo:1000,gapNext:1600,speed:1};
+function apRenderDeckList(){
+  const list=document.getElementById('apDeckList');list.innerHTML='';
+  Object.keys(DECK_META).forEach(deck=>{
+    const m=DECK_META[deck],total=DECKS[deck].length;
+    const el=document.createElement('div');
+    el.className='deck '+m.cls;
+    el.innerHTML=`<div class="accent"></div>
+      <h2>${m.icon} ${m.label} <span class="pill">${m.jp}</span></h2>
+      <div class="jp">${total}개 단어 · 순서대로 재생</div>`;
+    el.onclick=()=>apStart(deck);
+    list.appendChild(el);
+  });
+}
+function openAutoplay(){
+  document.getElementById('home').style.display='none';
+  document.getElementById('autoplay').classList.add('active');
+  document.getElementById('apPick').style.display='block';
+  document.getElementById('apPlay').classList.remove('active');
+  apRenderDeckList();
+  window.scrollTo(0,0);
+}
+function closeAutoplay(){
+  apStop();
+  document.getElementById('autoplay').classList.remove('active');
+  document.getElementById('home').style.display='block';
+}
+function apStart(deck){
+  AP.deck=deck;AP.idx=0;AP.playing=true;
+  document.getElementById('apPick').style.display='none';
+  document.getElementById('apPlay').classList.add('active');
+  document.getElementById('apDeckLabel').textContent=DECK_META[deck].icon+' '+DECK_META[deck].label;
+  document.getElementById('apTot').textContent=DECKS[deck].length;
+  document.getElementById('apToggle').textContent='⏸';
+  apPlayCurrent();
+}
+function apShowWord(d){
+  document.getElementById('apWord').textContent=d.w;
+  document.getElementById('apPron').textContent=d.p;
+  document.getElementById('apMean').textContent=d.m;
+  document.getElementById('apIdx').textContent=AP.idx+1;
+}
+function apSetPhase(t){document.getElementById('apPhase').textContent=t;}
+// 재생 체인: 일본어 2회 → 한국어 1회 → 다음
+function apPlayCurrent(){
+  if(!AP.playing)return;
+  const list=DECKS[AP.deck];
+  if(AP.idx>=list.length)AP.idx=0; // 무한 반복
+  const d=list[AP.idx];
+  apShowWord(d);
+  const jaText=d.wk||d.w;
+  const koText=cleanKo(d.m);
+  // 일본어 1회 → 일본어 2회 → 한국어 → 다음
+  apSetPhase('日本語');
+  speechSynthesis.cancel();
+  step1();
+  function step1(){ if(!AP.playing)return; speakLang(jaText,'ja-JP',()=>{ AP.timer=setTimeout(step2,AP.gapJa); }); }
+  function step2(){ if(!AP.playing)return; apSetPhase('日本語 ×2'); speakLang(jaText,'ja-JP',()=>{ AP.timer=setTimeout(step3,AP.gapKo); }); }
+  function step3(){ if(!AP.playing)return; apSetPhase('한국어'); speakLang(koText,'ko-KR',()=>{ AP.timer=setTimeout(next,AP.gapNext); }); }
+  function next(){ if(!AP.playing)return; AP.idx++; apPlayCurrent(); }
+}
+function apStop(){
+  AP.playing=false;
+  if(AP.timer)clearTimeout(AP.timer);
+  if('speechSynthesis' in window)speechSynthesis.cancel();
+}
+function apToggle(){
+  if(AP.playing){apStop();document.getElementById('apToggle').textContent='▶';apSetPhase('일시정지');}
+  else{AP.playing=true;document.getElementById('apToggle').textContent='⏸';apPlayCurrent();}
+}
+function apJump(delta){
+  const list=DECKS[AP.deck];
+  apStop();
+  AP.idx=(AP.idx+delta+list.length)%list.length;
+  AP.playing=true;document.getElementById('apToggle').textContent='⏸';
+  apPlayCurrent();
+}
+document.getElementById('autoplayBtn').onclick=openAutoplay;
+document.getElementById('autoBack').onclick=closeAutoplay;
+document.getElementById('apToggle').onclick=apToggle;
+document.getElementById('apNext').onclick=()=>apJump(1);
+document.getElementById('apPrev').onclick=()=>apJump(-1);
+
+// 자동재생 간격 프리셋
+const AP_GAPS={
+  short:{gapJa:600,gapKo:500,gapNext:800},
+  normal:{gapJa:1200,gapKo:1000,gapNext:1600},
+  long:{gapJa:2200,gapKo:1600,gapNext:2600},
+  verylong:{gapJa:3500,gapKo:2500,gapNext:4000},
+};
+document.querySelectorAll('.ap-gap-btns button').forEach(b=>{
+  b.onclick=()=>{
+    const g=AP_GAPS[b.dataset.gap];
+    AP.gapJa=g.gapJa;AP.gapKo=g.gapKo;AP.gapNext=g.gapNext;
+    document.querySelectorAll('.ap-gap-btns button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    try{localStorage.setItem('ap_gap',b.dataset.gap);}catch(_){}
+  };
+});
+// 저장된 간격 복원
+(function(){
+  let saved='normal';try{saved=localStorage.getItem('ap_gap')||'normal';}catch(_){}
+  const g=AP_GAPS[saved]||AP_GAPS.normal;
+  AP.gapJa=g.gapJa;AP.gapKo=g.gapKo;AP.gapNext=g.gapNext;
+  document.querySelectorAll('.ap-gap-btns button').forEach(x=>{
+    x.classList.toggle('on', x.dataset.gap===saved);
+  });
+})();
+
+
+
 document.getElementById('guideBtn').onclick=()=>{
   document.getElementById('home').style.display='none';
   document.getElementById('guide').classList.add('active');
