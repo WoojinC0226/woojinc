@@ -602,7 +602,13 @@ document.querySelectorAll('.rate button').forEach(b=>{
     c.due=now()+INTERVALS[c.box]*DAY + (q===0?5000:0);
     session.res[q]++;
     await saveState();
-    session.pos++;showCard();renderHome();
+    // 먼저 카드를 앞면으로 뒤집고, 평가 버튼 숨김 (다음 단어 뒷면 노출 방지)
+    $('#card').classList.remove('flip');
+    $('#rate').classList.add('hidden');
+    session.pos++;
+    renderHome();
+    // 뒤집기 애니메이션(0.5s)이 끝난 뒤 다음 카드 내용 채우기
+    setTimeout(()=>{ showCard(); }, 480);
   };
 });
 function finishSession(){
